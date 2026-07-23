@@ -121,7 +121,7 @@ pnpm build
 
 ### Host Updater
 
-在线升级需要把独立的 `ai-image-studio-host-updater` 安装为宿主机服务。它只监听专用 Unix Socket 或回环地址，通过 Bearer + HMAC 验证 Web 请求，并调用固定执行器完成备份、Cosign/Digest 校验、Migration、候选健康检查、切换和失败恢复。Web 容器不会获得 Docker Socket。
+在线升级需要把独立的 `ai-image-studio-host-updater` 安装为宿主机服务。它只监听专用 Unix Socket 或回环地址，通过 Bearer + HMAC 验证 Web 请求，并调用固定执行器完成备份、镜像 Digest 校验、Migration、候选健康检查、切换和失败恢复。Web 容器不会获得 Docker Socket。
 
 Release Manifest 对外文件使用 snake_case；Web API 返回浏览器时仍使用 camelCase。内部 HTTPS 服务使用私有 CA 时，将 CA 的 PEM 文件挂载到容器并通过绝对路径 `HTTP_CA_CERT_FILE` 配置，TLS 校验不会被关闭。仓库演练已从 Web 管理 API 经 Unix Socket 跑通 Host Updater、正式执行器和部署历史终态回写。
 
@@ -250,7 +250,7 @@ pnpm build
 
 ### Host Updater
 
-Online upgrades require the independent `ai-image-studio-host-updater` host service. It binds only to a dedicated Unix socket or loopback address, authenticates web requests with Bearer + HMAC, and invokes one fixed executor for backups, Cosign/digest verification, migrations, candidate health checks, switching, and automatic recovery. The web container never receives the Docker socket.
+Online upgrades require the independent `ai-image-studio-host-updater` host service. It binds only to a dedicated Unix socket or loopback address, authenticates web requests with Bearer + HMAC, and invokes one fixed executor for backups, immutable image-digest verification, migrations, candidate health checks, switching, and automatic recovery. The web container never receives the Docker socket.
 
 The downloadable Release Manifest uses snake_case, while the Web API serializes its browser response as camelCase. For internal HTTPS endpoints backed by a private CA, mount the CA PEM and configure its absolute path through `HTTP_CA_CERT_FILE`; TLS verification remains enabled. The repository drill now covers the complete path from the Web admin API through the Unix socket, Host Updater, fixed executor, and deployment-history synchronization.
 

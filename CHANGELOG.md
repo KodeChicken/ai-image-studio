@@ -13,7 +13,7 @@
 - 创作台生成取消入口，以及任务、助手消息和 SSE 事件一致的 `cancelled` 终态。
 - 创作会话标题即时搜索，以及历史作品会话/Provider/模型/日期/尺寸完整筛选。
 - 失败任务原消息重试、可见 SSE 恢复状态，以及任务创建失败时的草稿恢复和上传 Asset 补偿清理。
-- Host Updater 真实 Docker 隔离演练，覆盖 Cosign 签名成功链，以及 Digest、签名、Migration、候选、正式切换五类失败恢复；PostgreSQL Dump、S3 备份和升级后历史图片均做真实恢复与校验。
+- Host Updater 真实 Docker 隔离演练，覆盖固定镜像 Digest 成功链，以及 Digest、Migration、候选、正式切换四类失败恢复；PostgreSQL Dump、S3 备份和升级后历史图片均做真实恢复与校验。
 - Web 管理 API 经 Bearer + HMAC、Unix Socket、Host Updater 和正式执行器完成升级并幂等回写部署历史的真实 Docker 整链演练。
 
 ### 修复

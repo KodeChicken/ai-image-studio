@@ -6,7 +6,7 @@
 
 `TASK_EXECUTION_MODE=inline` 时由 API 进程内执行任务；`TASK_EXECUTION_MODE=redis` 时 API 只创建持久化任务并写入 Redis，独立 `worker` 消费队列，同时定时从 PostgreSQL 兜底领取遗漏任务。PostgreSQL 始终是任务与状态的事实来源，Redis 只承担派发与唤醒，不保存唯一业务状态。
 
-在线升级仍遵守本文安全边界：仓库已包含管理员页面、Manifest 兼容性检查、二次输密、操作审计，以及独立 `ai-image-studio-host-updater` 宿主机服务。Web 通过专用 Unix Socket 或回环地址提交带时间戳 HMAC 的请求；固定执行器负责镜像 Digest/Cosign 验证、备份、迁移、候选健康检查、切换和失败恢复。`vMAJOR.MINOR.PATCH` Tag 会触发 GitHub Actions 构建并推送 GHCR 镜像、签名固定 Digest、生成 Release Manifest；执行器在旧服务仍运行时先拉取和验签，确认成品可用后才进入停写阶段。Web 容器只挂载专用 Updater Socket，不挂载 Docker Socket。隔离环境已跑通真实签名镜像成功链、五类故障恢复，以及 Web → Unix Socket → Host Updater → 正式执行器 → 部署历史回写整链；生产启用前仍需使用生产数据副本、真实发布 Registry 补进程中断和不同版本回滚验收。
+在线升级仍遵守本文安全边界：仓库已包含管理员页面、Manifest 兼容性检查、二次输密、操作审计，以及独立 `ai-image-studio-host-updater` 宿主机服务。Web 通过专用 Unix Socket 或回环地址提交带时间戳 HMAC 的请求；固定执行器负责镜像 Digest 校验、备份、迁移、候选健康检查、切换和失败恢复。`vMAJOR.MINOR.PATCH` Tag 会触发 GitHub Actions 构建并推送 GHCR 镜像、记录固定 Digest、生成 Release Manifest；执行器在旧服务仍运行时先按 Digest 拉取镜像，确认成品可用后才进入停写阶段。Web 容器只挂载专用 Updater Socket，不挂载 Docker Socket。隔离环境已跑通固定 Digest 镜像成功链、四类故障恢复，以及 Web → Unix Socket → Host Updater → 正式执行器 → 部署历史回写整链；生产启用前仍需使用生产数据副本、真实发布 Registry 补进程中断和不同版本回滚验收。
 
 > 一个基于 **Vue 3 + TypeScript + Vite + Naive UI + Rust + Axum** 的自托管、多供应商 AI 图片生成平台。
 
@@ -3024,7 +3024,7 @@ Host Updater
     ↓
 GitHub Releases + GHCR
     ↓
-拉取并验签镜像、停写备份、迁移、切换、健康检查
+按 Digest 拉取镜像、停写备份、迁移、切换、健康检查
 ```
 
 组件职责：
@@ -3114,7 +3114,6 @@ Updater 在升级前检查：
 - 数据库是否健康
 - 备份是否成功
 - 镜像 Digest 是否匹配
-- Release 签名或证明是否有效
 
 ---
 

@@ -1,6 +1,6 @@
 # Host Updater 部署与故障演练
 
-Host Updater 是独立运行在宿主机上的最小控制服务。Web 应用只负责管理员鉴权、二次输密、Manifest 预检和任务展示；Docker、备份目录、Cosign 公钥及发布切换权限只交给 Host Updater。
+Host Updater 是独立运行在宿主机上的最小控制服务。Web 应用只负责管理员鉴权、二次输密、Manifest 预检和任务展示；Docker、备份目录及发布切换权限只交给 Host Updater。
 
 ## 1. 已实现边界
 
@@ -10,7 +10,7 @@ Host Updater 是独立运行在宿主机上的最小控制服务。Web 应用只
 - Job 状态写入宿主机独立目录，服务重启后不会把中断任务误报为成功。
 - 只调用 `HOST_UPDATER_EXECUTOR_PATH` 指定的绝对路径执行器，不接收请求方提供的命令、脚本路径或环境变量。
 - 可配置执行器 SHA-256，防止已安装脚本被静默替换。
-- 固定执行器执行数据库和图片备份、S3 备份证据校验、镜像 Digest/Cosign 校验、SQLx Migration、候选容器健康检查、正式切换、失败恢复及历史版本保留。
+- 固定执行器执行数据库和图片备份、S3 备份证据校验、镜像 Digest 校验、SQLx Migration、候选容器健康检查、正式切换、失败恢复及历史版本保留。
 - 成功结果包含版本、镜像、Digest、Schema 和备份清单；Web 同步后写入 `deployment_history`。
 
 ## 2. 宿主机依赖
@@ -19,7 +19,6 @@ Host Updater 是独立运行在宿主机上的最小控制服务。Web 应用只
 
 - Docker Engine 和 Docker Compose v2
 - `curl`、`jq`、`tar`、`sha256sum`
-- `cosign`
 - 运行中的 AI Image Studio Compose 项目
 
 Host Updater 自身不放进 Web 容器，也不通过 TCP 暴露到公网。
@@ -94,31 +93,10 @@ sha256sum /usr/local/libexec/ai-image-studio/execute-update.sh
 1. 重新执行后端和前端检查。
 2. 使用 Buildx 构建 `linux/amd64` 正式镜像并推送到 `ghcr.io/kodechicken/ai-image-studio`。
 3. 获取 Registry 返回的不可变镜像 Digest。
-4. 使用 Cosign 私钥对 `image@sha256:...` 签名并立即用公钥验证。
-5. 根据 `backend/migrations` 的最高版本生成 `release-manifest.json`。
-6. 创建 GitHub Release，上传 Manifest、`cosign.pub` 和校验和。
+4. 根据 `backend/migrations` 的最高版本生成 `release-manifest.json`。
+5. 创建 GitHub Release，上传 Manifest。
 
-首次发布前只需生成一次 Cosign 密钥：
-
-```bash
-cosign generate-key-pair
-```
-
-把 `cosign.key` 的完整内容和生成时输入的密码分别保存为 GitHub Actions Repository Secrets：
-
-- `COSIGN_PRIVATE_KEY`
-- `COSIGN_PASSWORD`
-
-私钥不得提交到仓库或复制到 VPS。发布完成后，VPS 只安装 Release 中的公钥：
-
-```bash
-curl --fail --location \
-  --output /tmp/ai-image-studio-cosign.pub \
-  https://github.com/KodeChicken/ai-image-studio/releases/latest/download/cosign.pub
-sudo install -m 0644 \
-  /tmp/ai-image-studio-cosign.pub \
-  /etc/ai-image-studio-updater/cosign.pub
-```
+该流程不需要额外的签名密钥或 GitHub Actions Secrets。它与 Sub2API 的简化发布方式一致，信任 GitHub Release、HTTPS 和 Registry；执行器通过 `image@sha256:...` 固定并校验实际拉取的镜像内容。
 
 确认 GHCR Package 对 VPS 可读。公开 Package 无需登录；私有 Package 必须先在 VPS 执行 `docker login ghcr.io`，并使用仅具有 `read:packages` 权限的 Token。
 
@@ -155,7 +133,7 @@ git push origin v0.1.1
 
 下载文件以以上 snake_case 字段作为发布契约，正式执行器直接按此格式校验。Web 后端同时兼容读取历史 camelCase Manifest，但返回浏览器的管理 API 仍按前端约定序列化为 camelCase。
 
-正式镜像必须用与 `COSIGN_PUBLIC_KEY` 匹配的密钥签名。执行器按 `image@sha256:...` 拉取并执行 `cosign verify`，不会仅信任可变 Tag。Release Workflow 会生成该文件；VPS 上的 `COSIGN_PUBLIC_KEY` 应指向已人工安装并固定权限的公钥路径。
+执行器不会仅信任可变 Tag，而是把 Manifest 中的镜像地址和 Registry 返回的 Digest 组合为 `image@sha256:...` 后拉取；Digest 不存在或内容不匹配时 Docker 会拒绝继续。该方案信任 GitHub Release、HTTPS 和 GHCR 账号安全，不额外维护独立签名密钥。
 
 ## 5. Local 与 S3 备份
 
@@ -177,12 +155,12 @@ curl -i http://127.0.0.1:3199/health
 sudo journalctl -u ai-image-studio-host-updater -f
 ```
 
-健康接口只证明 Updater 进程存在；升级是否可执行还取决于执行器配置、磁盘、数据库、备份证据、Manifest 和签名检查。
+健康接口只证明 Updater 进程存在；升级是否可执行还取决于执行器配置、磁盘、数据库、备份证据和 Manifest。
 
 ## 7. 执行顺序
 
 1. 校验配置、数据库健康、Schema 兼容窗口和磁盘空间。
-2. 在旧服务继续运行时按 Digest 拉取镜像并执行 Cosign 验证；下载或签名失败不会造成业务停机。
+2. 在旧服务继续运行时按 Digest 拉取镜像；下载或 Digest 校验失败不会造成业务停机。
 3. 停止 `app` 与 `worker`，保持 PostgreSQL/Redis 运行，形成一致停写点。
 4. 备份数据库，并备份 Local 图片或验证 S3 独立备份证据。
 5. 升级时运行目标镜像内的 SQLx Migrator，并核对最终 Schema。
@@ -195,24 +173,22 @@ sudo journalctl -u ai-image-studio-host-updater -f
 
 ## 8. 真实 Docker 隔离成功链
 
-[`executor_real_docker_drill.sh`](../host-updater/tests/executor_real_docker_drill.sh) 不替换 `docker`、`cosign`、PostgreSQL 或对象存储命令。它会启动隔离的 PostgreSQL、Redis 和 MinIO，运行正式 `execute-update.sh`，并使用调用方提前放入隔离 Registry 的真实签名镜像。
+[`executor_real_docker_drill.sh`](../host-updater/tests/executor_real_docker_drill.sh) 不替换 `docker`、PostgreSQL 或对象存储命令。它会启动隔离的 PostgreSQL、Redis 和 MinIO，运行正式 `execute-update.sh`，并使用调用方提前放入隔离 Registry、由 Digest 固定的真实镜像。
 
-先构建目标镜像，将其推送到隔离 Registry，并用测试私钥签名；传给脚本的 Digest 必须是 Registry 返回的 Manifest Digest，公钥必须与签名私钥匹配。然后运行：
+先构建目标镜像并将其推送到隔离 Registry；传给脚本的 Digest 必须是 Registry 返回的 Manifest Digest。然后运行：
 
 ```bash
-SIGNED_IMAGE_TAG=localhost:5055/ai-image-studio:v0.2.0 \
-SIGNED_IMAGE_DIGEST=sha256:... \
-COSIGN_BIN=/usr/local/bin/cosign \
-COSIGN_PUBLIC_KEY=/tmp/ai-image-studio-drill/cosign.pub \
+TARGET_IMAGE_TAG=localhost:5055/ai-image-studio:v0.2.0 \
+TARGET_IMAGE_DIGEST=sha256:... \
 bash host-updater/tests/executor_real_docker_drill.sh
 ```
 
-如需验证两个不同应用镜像之间的升级，可额外传入 `CURRENT_IMAGE_TAG`、`CURRENT_IMAGE_DIGEST` 和 `CURRENT_SCHEMA_VERSION`；未传时使用目标镜像作为初始运行镜像，只验证执行器真实成功链。`TARGET_IMAGE_TAG/TARGET_IMAGE_DIGEST` 是 `SIGNED_IMAGE_TAG/SIGNED_IMAGE_DIGEST` 的等价新名称，便于失败场景传入未签名目标。
+如需验证两个不同应用镜像之间的升级，可额外传入 `CURRENT_IMAGE_TAG`、`CURRENT_IMAGE_DIGEST` 和 `CURRENT_SCHEMA_VERSION`；未传时使用目标镜像作为初始运行镜像，只验证执行器真实成功链。
 
 脚本会自动完成并断言：
 
 1. 从本地 HTTPS Release Manifest 读取固定 Digest。
-2. 在隔离应用仍然 Ready 时按 Digest 拉取镜像并执行真实 `cosign verify`。
+2. 在隔离应用仍然 Ready 时按 Digest 拉取镜像，并由 Docker 验证 Registry Manifest Digest。
 3. 停止隔离应用，生成真实 PostgreSQL Custom Dump。
 4. 把上传到主 MinIO Bucket 的图片镜像到独立备份 Bucket，并写入新鲜 S3 备份引用。
 5. 使用目标镜像运行 SQLx Migration，启动候选容器并检查 Ready。
@@ -224,7 +200,7 @@ bash host-updater/tests/executor_real_docker_drill.sh
 成功标记如下：
 
 ```text
-HOST_UPDATER_REAL_DOCKER_DRILL_OK signed_digest=1 https_manifest=1 postgres_backup_restore=1 s3_backup_restore=1 migration=1 candidate_ready=1 active_ready=1 historical_s3_image=1
+HOST_UPDATER_REAL_DOCKER_DRILL_OK pinned_digest=1 https_manifest=1 postgres_backup_restore=1 s3_backup_restore=1 migration=1 candidate_ready=1 active_ready=1 historical_s3_image=1
 ```
 
 还可以用同一套真实依赖验证 Web 控制面整链。`HOST_UPDATER_BIN` 必须指向当前代码构建出的 Linux 可执行文件：
@@ -233,8 +209,6 @@ HOST_UPDATER_REAL_DOCKER_DRILL_OK signed_digest=1 https_manifest=1 postgres_back
 DRILL_TRIGGER=web \
 TARGET_IMAGE_TAG=localhost:5055/ai-image-studio:v0.2.0 \
 TARGET_IMAGE_DIGEST=sha256:... \
-COSIGN_BIN=/usr/local/bin/cosign \
-COSIGN_PUBLIC_KEY=/tmp/ai-image-studio-drill/cosign.pub \
 HOST_UPDATER_BIN=/usr/local/bin/ai-image-studio-host-updater \
 bash host-updater/tests/executor_real_docker_drill.sh
 ```
@@ -242,18 +216,17 @@ bash host-updater/tests/executor_real_docker_drill.sh
 该模式额外验证管理员登录和强制改密、HTTPS Manifest 预检、Web 创建任务、Bearer + HMAC、Unix Socket、状态轮询以及 `deployment_history.source_job_id` 幂等回写。成功标记为：
 
 ```text
-HOST_UPDATER_WEB_REAL_DOCKER_DRILL_OK unix_socket=1 hmac=1 web_job=1 deployment_sync=1 signed_digest=1 postgres_backup_restore=1 s3_backup_restore=1 migration=1 candidate_ready=1 active_ready=1 historical_s3_image=1
+HOST_UPDATER_WEB_REAL_DOCKER_DRILL_OK unix_socket=1 hmac=1 web_job=1 deployment_sync=1 pinned_digest=1 postgres_backup_restore=1 s3_backup_restore=1 migration=1 candidate_ready=1 active_ready=1 historical_s3_image=1
 ```
 
-同一脚本还支持五类真实失败场景：
+同一脚本还支持四类真实失败场景：
 
 | `DRILL_SCENARIO` | 目标镜像 | 预期失败点 |
 |---|---|---|
 | `digest_failure` | Manifest 使用不存在的 Digest | `docker pull image@digest` |
-| `signature_failure` | 已推送但未签名的独立 Repository | `cosign verify` |
-| `migration_failure` | 已签名的故障镜像 | 目标镜像 `migrate` |
-| `candidate_failure` | 已签名的故障镜像 | 候选容器 Ready |
-| `active_failure` | 已签名的故障镜像 | 正式应用 Ready |
+| `migration_failure` | 故障镜像 | 目标镜像 `migrate` |
+| `candidate_failure` | 故障镜像 | 候选容器 Ready |
+| `active_failure` | 故障镜像 | 正式应用 Ready |
 
 后三种场景使用仓库内的 [`failure-image.Dockerfile`](../host-updater/tests/fixtures/failure-image.Dockerfile) 构建；它只替换测试入口，内部仍调用正式 `ai-image-studio` 二进制。示例：
 
@@ -263,14 +236,12 @@ docker build \
   --build-arg BASE_IMAGE=ai-image-studio:real-drill \
   --tag localhost:5055/ai-image-studio-failure:v0.2.0 .
 
-# 推送并用同一测试私钥签名后执行；CURRENT_* 指向可正常运行的旧镜像。
+# 推送后使用 Registry 返回的 Digest 执行；CURRENT_* 指向可正常运行的旧镜像。
 DRILL_SCENARIO=migration_failure \
 TARGET_IMAGE_TAG=localhost:5055/ai-image-studio-failure:v0.2.0 \
 TARGET_IMAGE_DIGEST=sha256:... \
 CURRENT_IMAGE_TAG=localhost:5055/ai-image-studio:v0.1.0 \
 CURRENT_IMAGE_DIGEST=sha256:... \
-COSIGN_BIN=/usr/local/bin/cosign \
-COSIGN_PUBLIC_KEY=/tmp/ai-image-studio-drill/cosign.pub \
 bash host-updater/tests/executor_real_docker_drill.sh
 ```
 
@@ -280,7 +251,7 @@ bash host-updater/tests/executor_real_docker_drill.sh
 HOST_UPDATER_REAL_DOCKER_FAILURE_OK scenario=migration_failure rejected=1 schema_unchanged=1 old_release_ready=1 postgres_backup_restore=1 s3_backup_restore=1 historical_s3_image=1
 ```
 
-隔离环境已经覆盖执行器成功链、五类失败恢复，以及 Web 管理 API 到 Updater 服务的成功整链；它们仍不替代生产数据副本、真实发布 Registry、Updater 进程中断和不同版本间真实回滚验收。
+隔离环境已经覆盖执行器成功链、四类失败恢复，以及 Web 管理 API 到 Updater 服务的成功整链；它们仍不替代生产数据副本、真实发布 Registry、Updater 进程中断和不同版本间真实回滚验收。
 
 ## 9. 隔离环境故障演练
 
@@ -291,17 +262,16 @@ bash host-updater/tests/executor_success_drill.sh
 bash host-updater/tests/executor_failure_drill.sh
 ```
 
-成功演练使用隔离临时目录和固定假命令，验证 Migration 成功、候选 Ready、正式切换、`release.env`、`history.json`、备份保留以及不兼容回滚阻断。失败演练在 Migration 阶段注入失败，验证数据库、Local 图片和旧版本恢复。两者都是可重复的控制流证据，不能替代真实签名镜像和真实备份恢复演练。
+成功演练使用隔离临时目录和固定假命令，验证 Migration 成功、候选 Ready、正式切换、`release.env`、`history.json`、备份保留以及不兼容回滚阻断。失败演练在 Migration 阶段注入失败，验证数据库、Local 图片和旧版本恢复。两者都是可重复的控制流证据，不能替代真实 Registry Digest 和真实备份恢复演练。
 
 不要直接在生产环境首次验证恢复能力。复制 Compose 项目、数据库和图片目录到隔离宿主机或独立 VM，使用独立端口和测试凭据完成以下演练：
 
 1. Digest 不匹配：修改测试 Manifest 的 `image_digest`，确认任务失败且 Migration 未运行。
-2. 签名失败：使用未签名镜像，确认 Cosign 阶段拒绝继续。
-3. Migration 失败：使用包含故意失败 Migration 的测试镜像，确认 `database.dump` 被恢复，旧应用重新 Ready。
-4. 候选失败：使用 `/api/v1/ready` 返回 `not_ready` 的测试镜像，确认候选被删除，数据库/图片和旧应用恢复。
-5. 正式切换失败：让测试镜像只在候选端口可用、正式启动失败，确认 `release.env` 回到旧 Digest。
-6. Updater 重启：任务运行时终止 Updater，重启后确认该任务标记为 `failed/updater_restarted`，不会伪报成功。
-7. 回滚窗口：连续部署四个测试版本，确认只允许回滚到最近三个保留版本，且 Schema 必须位于目标版本声明的兼容窗口内。
+2. Migration 失败：使用包含故意失败 Migration 的测试镜像，确认 `database.dump` 被恢复，旧应用重新 Ready。
+3. 候选失败：使用 `/api/v1/ready` 返回 `not_ready` 的测试镜像，确认候选被删除，数据库/图片和旧应用恢复。
+4. 正式切换失败：让测试镜像只在候选端口可用、正式启动失败，确认 `release.env` 回到旧 Digest。
+5. Updater 重启：任务运行时终止 Updater，重启后确认该任务标记为 `failed/updater_restarted`，不会伪报成功。
+6. 回滚窗口：连续部署四个测试版本，确认只允许回滚到最近三个保留版本，且 Schema 必须位于目标版本声明的兼容窗口内。
 
 每次演练至少核对：
 

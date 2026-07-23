@@ -53,7 +53,6 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: sigstore/cosign-installer@v3
 
       - name: Resolve release metadata
         id: release
@@ -68,7 +67,7 @@ jobs:
           image="ghcr.io/${GITHUB_REPOSITORY,,}"
           printf 'version=%s\nimage=%s\n' "$version" "$image" >>"$GITHUB_OUTPUT"
 
-      - name: Build and push signed release candidate
+      - name: Build and push release image
         id: image
         uses: docker/build-push-action@v6
         with:
@@ -85,24 +84,6 @@ jobs:
           cache-from: type=gha,scope=release-amd64
           cache-to: type=gha,mode=max,scope=release-amd64
 
-      - name: Sign and verify image digest
-        shell: bash
-        env:
-          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
-          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
-          IMAGE: ${{ steps.release.outputs.image }}
-          DIGEST: ${{ steps.image.outputs.digest }}
-        run: |
-          set -Eeuo pipefail
-          if [[ -z "$COSIGN_PRIVATE_KEY" || -z "$COSIGN_PASSWORD" ]]; then
-            printf 'repository secrets COSIGN_PRIVATE_KEY and COSIGN_PASSWORD are required\n' >&2
-            exit 1
-          fi
-          install -d release-assets
-          cosign sign --yes --key env://COSIGN_PRIVATE_KEY "$IMAGE@$DIGEST"
-          cosign public-key --key env://COSIGN_PRIVATE_KEY >release-assets/cosign.pub
-          cosign verify --key release-assets/cosign.pub "$IMAGE@$DIGEST"
-
       - name: Generate release manifest
         shell: bash
         env:
@@ -111,6 +92,7 @@ jobs:
           DIGEST: ${{ steps.image.outputs.digest }}
         run: |
           set -Eeuo pipefail
+          install -d release-assets
           schema_target="$(find backend/migrations -maxdepth 1 -type f -name '*.sql' -printf '%f\n' \
             | sed -E 's/^0*([0-9]+)_.*/\1/' | sort -n | tail -n 1)"
           [[ "$schema_target" =~ ^[0-9]+$ ]] || {
@@ -155,14 +137,9 @@ jobs:
             (.schema_max_supported == .schema_target) and
             (.requires_backup == true)
           ' release-assets/release-manifest.json >/dev/null
-          sha256sum release-assets/release-manifest.json release-assets/cosign.pub \
-            >release-assets/checksums.txt
-
       - name: Publish GitHub Release assets
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
           files: |
             release-assets/release-manifest.json
-            release-assets/cosign.pub
-            release-assets/checksums.txt

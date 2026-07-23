@@ -52,7 +52,7 @@ fi
 required=(
   APP_DIR COMPOSE_FILE BASE_ENV_FILE APP_ENV_FILE RELEASE_ENV_FILE STATE_ROOT
   BACKUP_ROOT LOCAL_STORAGE_PATH STORAGE_DRIVER UPDATE_MANIFEST_URL
-  COSIGN_PUBLIC_KEY INITIAL_APP_IMAGE INITIAL_APP_VERSION INITIAL_APP_DIGEST
+  INITIAL_APP_IMAGE INITIAL_APP_VERSION INITIAL_APP_DIGEST
   INITIAL_SCHEMA_MIN_SUPPORTED INITIAL_SCHEMA_MAX_SUPPORTED
   POSTGRES_USER POSTGRES_DB PUBLIC_HEALTH_URL CANDIDATE_PORT KEEP_PREVIOUS_RELEASES
   MIN_FREE_BYTES
@@ -61,7 +61,7 @@ for name in "${required[@]}"; do
   [[ -n "${!name:-}" ]] || fail "$name is required"
 done
 
-for command_name in curl jq docker cosign sha256sum tar find stat df realpath; do
+for command_name in curl jq docker sha256sum tar find stat df realpath; do
   command -v "$command_name" >/dev/null || fail "$command_name is required"
 done
 docker compose version >/dev/null 2>&1 || fail "Docker Compose v2 is required"
@@ -82,11 +82,9 @@ RELEASE_ENV_FILE=$(safe_absolute_path "$RELEASE_ENV_FILE")
 STATE_ROOT=$(safe_absolute_path "$STATE_ROOT")
 BACKUP_ROOT=$(safe_absolute_path "$BACKUP_ROOT")
 LOCAL_STORAGE_PATH=$(safe_absolute_path "$LOCAL_STORAGE_PATH")
-COSIGN_PUBLIC_KEY=$(safe_absolute_path "$COSIGN_PUBLIC_KEY")
 
 [[ -d "$APP_DIR" && -f "$COMPOSE_FILE" && -f "$BASE_ENV_FILE" && -f "$APP_ENV_FILE" ]] \
   || fail "application directory, Compose file, and environment files must exist"
-[[ -f "$COSIGN_PUBLIC_KEY" ]] || fail "COSIGN_PUBLIC_KEY does not exist"
 [[ "$STORAGE_DRIVER" == local || "$STORAGE_DRIVER" == s3 ]] || fail "STORAGE_DRIVER must be local or s3"
 [[ "$UPDATE_MANIFEST_URL" == https://* ]] || fail "UPDATE_MANIFEST_URL must use HTTPS"
 [[ "$CANDIDATE_PORT" =~ ^[0-9]+$ && "$CANDIDATE_PORT" -ge 1024 && "$CANDIDATE_PORT" -le 65535 ]] \
@@ -284,10 +282,9 @@ AVAILABLE_KB=$(df -Pk "$BACKUP_ROOT" | awk 'NR == 2 {print $4}')
 [[ "$AVAILABLE_KB" =~ ^[0-9]+$ ]] || fail "could not determine free disk space"
 ((AVAILABLE_KB * 1024 >= MIN_FREE_BYTES)) || fail "insufficient free disk space for a safe update"
 
-emit_progress 10 pulling_signed_image
+emit_progress 10 pulling_image
 docker pull "$TARGET_IMAGE" >&2
 docker image inspect "$TARGET_IMAGE" >/dev/null
-cosign verify --key "$COSIGN_PUBLIC_KEY" "$TARGET_IMAGE" >&2
 
 emit_progress 40 entering_maintenance
 compose stop app worker >&2

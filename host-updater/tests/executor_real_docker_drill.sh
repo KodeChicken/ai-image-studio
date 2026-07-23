@@ -1,35 +1,31 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# Runs the fixed executor against real Docker, PostgreSQL, Redis, MinIO and a
-# Cosign-signed image. The caller owns the registry and signed image so this
-# test never pushes to a production registry.
+# Runs the fixed executor against real Docker, PostgreSQL, Redis, MinIO and an
+# image pinned by its registry digest. The caller owns the registry and image,
+# so this test never pushes to a production registry.
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 EXECUTOR_SCRIPT=${EXECUTOR_SCRIPT:-"$ROOT/host-updater/scripts/execute-update.sh"}
-TARGET_IMAGE_TAG=${TARGET_IMAGE_TAG:-${SIGNED_IMAGE_TAG:-}}
-TARGET_IMAGE_DIGEST=${TARGET_IMAGE_DIGEST:-${SIGNED_IMAGE_DIGEST:-}}
+TARGET_IMAGE_TAG=${TARGET_IMAGE_TAG:-}
+TARGET_IMAGE_DIGEST=${TARGET_IMAGE_DIGEST:-}
 CURRENT_IMAGE_TAG=${CURRENT_IMAGE_TAG:-$TARGET_IMAGE_TAG}
 CURRENT_IMAGE_DIGEST=${CURRENT_IMAGE_DIGEST:-$TARGET_IMAGE_DIGEST}
 CURRENT_SCHEMA_VERSION=${CURRENT_SCHEMA_VERSION:-10}
 DRILL_SCENARIO=${DRILL_SCENARIO:-success}
 DRILL_TRIGGER=${DRILL_TRIGGER:-executor}
 HOST_UPDATER_BIN=${HOST_UPDATER_BIN:-}
-COSIGN_BIN=${COSIGN_BIN:-$(command -v cosign || true)}
-COSIGN_PUBLIC_KEY=${COSIGN_PUBLIC_KEY:?COSIGN_PUBLIC_KEY is required}
 PUBLIC_PORT=${PUBLIC_PORT:-3410}
 CANDIDATE_PORT=${CANDIDATE_PORT:-3411}
 MANIFEST_PORT=${MANIFEST_PORT:-3443}
 
 [[ -x "$EXECUTOR_SCRIPT" ]] || { printf 'executor is not executable: %s\n' "$EXECUTOR_SCRIPT" >&2; exit 1; }
-[[ -x "$COSIGN_BIN" ]] || { printf 'cosign is not executable: %s\n' "$COSIGN_BIN" >&2; exit 1; }
-[[ -f "$COSIGN_PUBLIC_KEY" ]] || { printf 'Cosign public key does not exist: %s\n' "$COSIGN_PUBLIC_KEY" >&2; exit 1; }
 [[ -n "$TARGET_IMAGE_TAG" ]] || { printf 'TARGET_IMAGE_TAG is required\n' >&2; exit 1; }
 [[ "$TARGET_IMAGE_DIGEST" =~ ^sha256:[0-9a-fA-F]{64}$ ]] || { printf 'invalid target image digest\n' >&2; exit 1; }
 [[ "$CURRENT_IMAGE_DIGEST" =~ ^sha256:[0-9a-fA-F]{64}$ ]] || { printf 'invalid current image digest\n' >&2; exit 1; }
 [[ "$CURRENT_SCHEMA_VERSION" =~ ^[0-9]+$ ]] || { printf 'invalid current schema version\n' >&2; exit 1; }
 case "$DRILL_SCENARIO" in
-  success|digest_failure|signature_failure) FIXTURE_FAILURE_MODE="" ;;
+  success|digest_failure) FIXTURE_FAILURE_MODE="" ;;
   migration_failure) FIXTURE_FAILURE_MODE=migration ;;
   candidate_failure) FIXTURE_FAILURE_MODE=candidate ;;
   active_failure) FIXTURE_FAILURE_MODE=active ;;
@@ -95,8 +91,6 @@ install -d -m 700 \
   "$WORK_ROOT/updater-service"
 install -d -m 755 "$WORK_ROOT/app/images" "$WORK_ROOT/manifest"
 install -d -m 770 "$WORK_ROOT/updater-socket"
-ln -s "$COSIGN_BIN" "$WORK_ROOT/tools/cosign"
-cp -- "$COSIGN_PUBLIC_KEY" "$WORK_ROOT/cosign.pub"
 
 openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
   -keyout "$WORK_ROOT/manifest/ca.key" -out "$WORK_ROOT/manifest/ca.crt" \
@@ -393,7 +387,6 @@ STORAGE_DRIVER=s3
 UPDATE_MANIFEST_URL=https://localhost:$MANIFEST_PORT/release-manifest.json
 S3_BACKUP_REFERENCE_FILE=$WORK_ROOT/s3-backup-reference.txt
 S3_BACKUP_MAX_AGE_SECONDS=300
-COSIGN_PUBLIC_KEY=$WORK_ROOT/cosign.pub
 INITIAL_APP_IMAGE=$CURRENT_IMAGE_TAG
 INITIAL_APP_VERSION=0.1.0
 INITIAL_APP_DIGEST=$CURRENT_IMAGE_DIGEST
@@ -549,9 +542,9 @@ RESTORED_APP_SHA256=$(sha256sum "$WORK_ROOT/restored-from-app.png" | awk '{print
 
 if [[ "$DRILL_SCENARIO" == success ]]; then
   if [[ "$DRILL_TRIGGER" == web ]]; then
-    printf 'HOST_UPDATER_WEB_REAL_DOCKER_DRILL_OK unix_socket=1 hmac=1 web_job=1 deployment_sync=1 signed_digest=1 postgres_backup_restore=1 s3_backup_restore=1 migration=1 candidate_ready=1 active_ready=1 historical_s3_image=1\n'
+    printf 'HOST_UPDATER_WEB_REAL_DOCKER_DRILL_OK unix_socket=1 hmac=1 web_job=1 deployment_sync=1 pinned_digest=1 postgres_backup_restore=1 s3_backup_restore=1 migration=1 candidate_ready=1 active_ready=1 historical_s3_image=1\n'
   else
-    printf 'HOST_UPDATER_REAL_DOCKER_DRILL_OK signed_digest=1 https_manifest=1 postgres_backup_restore=1 s3_backup_restore=1 migration=1 candidate_ready=1 active_ready=1 historical_s3_image=1\n'
+    printf 'HOST_UPDATER_REAL_DOCKER_DRILL_OK pinned_digest=1 https_manifest=1 postgres_backup_restore=1 s3_backup_restore=1 migration=1 candidate_ready=1 active_ready=1 historical_s3_image=1\n'
   fi
 else
   printf 'HOST_UPDATER_REAL_DOCKER_FAILURE_OK scenario=%s rejected=1 schema_unchanged=1 old_release_ready=1 postgres_backup_restore=1 s3_backup_restore=1 historical_s3_image=1\n' "$DRILL_SCENARIO"

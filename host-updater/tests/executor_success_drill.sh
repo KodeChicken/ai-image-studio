@@ -21,7 +21,6 @@ printf 'historical-image' >"$IMAGE_ROOT/history.bin"
 printf 'services: {}\n' >"$APP_DIR/docker-compose.yml"
 printf 'BASE=1\n' >"$APP_DIR/.env.example"
 printf 'APP=1\n' >"$APP_DIR/.env"
-printf 'test-key\n' >"$WORK_ROOT/cosign.pub"
 cat >"$STATE_ROOT-release.env" <<EOF
 APP_IMAGE=ghcr.io/example/ai-image-studio:v0.1.0@$OLD_DIGEST
 APP_IMAGE_REFERENCE=ghcr.io/example/ai-image-studio:v0.1.0@$OLD_DIGEST
@@ -113,11 +112,7 @@ else
 fi
 EOF
 
-cat >"$FAKE_BIN/cosign" <<'EOF'
-#!/usr/bin/env bash
-exit 0
-EOF
-chmod 0755 "$FAKE_BIN/docker" "$FAKE_BIN/curl" "$FAKE_BIN/cosign"
+chmod 0755 "$FAKE_BIN/docker" "$FAKE_BIN/curl"
 
 CONFIG_FILE="$WORK_ROOT/executor.env"
 cat >"$CONFIG_FILE" <<EOF
@@ -132,7 +127,6 @@ BACKUP_ROOT=$BACKUP_ROOT
 LOCAL_STORAGE_PATH=$IMAGE_ROOT
 STORAGE_DRIVER=local
 UPDATE_MANIFEST_URL=https://example.invalid/release-manifest.json
-COSIGN_PUBLIC_KEY=$WORK_ROOT/cosign.pub
 INITIAL_APP_IMAGE=ghcr.io/example/ai-image-studio:v0.1.0
 INITIAL_APP_VERSION=0.1.0
 INITIAL_APP_DIGEST=$OLD_DIGEST
