@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use futures_util::TryStreamExt;
-use object_store::{ObjectStore, aws::AmazonS3Builder, path::Path as ObjectPath};
+use object_store::{ObjectStore, ObjectStoreExt, aws::AmazonS3Builder, path::Path as ObjectPath};
 use secrecy::ExposeSecret;
 use tokio::io::AsyncWriteExt;
 

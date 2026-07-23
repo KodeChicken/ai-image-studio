@@ -12,14 +12,20 @@ jobs:
   dependency-audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@cargo-audit
-      - run: cargo audit
-      - uses: pnpm/action-setup@v4
+      - name: Verify ignored RSA advisory is not compiled
+        run: |
+          if cargo tree --workspace --edges normal --prefix none | grep -q '^rsa v'; then
+            echo 'rsa must not be present in the compiled dependency tree' >&2
+            exit 1
+          fi
+      - run: cargo audit --ignore RUSTSEC-2023-0071
+      - uses: pnpm/action-setup@v6
         with:
           version: 10.13.1
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - run: pnpm install --frozen-lockfile
@@ -30,8 +36,9 @@ jobs:
   secret-scan:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2
-
+      - uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
