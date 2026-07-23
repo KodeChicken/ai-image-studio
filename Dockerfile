@@ -9,7 +9,7 @@ RUN --mount=type=cache,id=ai-image-studio-pnpm-store,target=/root/.local/share/p
 COPY frontend/ ./
 RUN pnpm typecheck && pnpm build
 
-FROM rust:1.96-bookworm AS backend-builder
+FROM rust:1.97-bookworm AS backend-builder
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY backend/Cargo.toml backend/Cargo.toml
