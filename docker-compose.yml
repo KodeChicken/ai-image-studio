@@ -35,6 +35,8 @@ services:
       HOST_UPDATER_SOCKET: /run/ai-image-studio-updater/host-updater.sock
       HOST_UPDATER_TOKEN: ""
       HOST_UPDATER_TOKEN_FILE: /run/ai-image-studio-updater/token
+      UPDATE_MANIFEST_URL: ${UPDATE_MANIFEST_URL:-https://github.com/KodeChicken/ai-image-studio/releases/latest/download/release-manifest.json}
+      UPDATE_MANIFEST_TOKEN: ${UPDATE_MANIFEST_TOKEN:-}
     depends_on:
       migrate:
         condition: service_completed_successfully
