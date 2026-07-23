@@ -268,15 +268,9 @@ pub async fn create_task(
     let mut input_asset_ids =
         validate_explicit_assets(&mut tx, user_id, &request.input_asset_ids).await?;
     let explicit_asset_count = input_asset_ids.len();
-    if input_asset_ids.is_empty()
-        && let Some(parent_id) = parent_message_id
-        && should_reference_previous(&request.content)
-    {
-        let candidates = generated_assets_for_message(&mut tx, parent_id, user_id).await?;
-        if let Some(selected) = select_previous_asset(&request.content, &candidates)? {
-            input_asset_ids.push(selected);
-        }
-    }
+    let previous_asset_id =
+        latest_generated_asset_for_conversation(&mut tx, request.conversation_id, user_id).await?;
+    append_previous_asset(&mut input_asset_ids, previous_asset_id)?;
     let operation = if input_asset_ids.is_empty() {
         "generation"
     } else {
@@ -634,7 +628,11 @@ async fn process_task(state: &AppState, task_id: Uuid) -> anyhow::Result<()> {
         FROM task_input_images i
         JOIN image_assets a ON a.id = i.asset_id
         WHERE i.task_id = $1
-        ORDER BY i.input_role, i.input_index
+        ORDER BY CASE i.input_role
+            WHEN 'source' THEN 0
+            WHEN 'reference' THEN 1
+            ELSE 2
+        END, i.input_index
         "#,
     )
     .bind(task_id)
@@ -1745,23 +1743,49 @@ async fn validate_explicit_assets(
     Ok(asset_ids.to_vec())
 }
 
-async fn generated_assets_for_message(
+async fn latest_generated_asset_for_conversation(
     tx: &mut Transaction<'_, Postgres>,
-    message_id: Uuid,
+    conversation_id: Uuid,
     user_id: Uuid,
-) -> AppResult<Vec<Uuid>> {
+) -> AppResult<Option<Uuid>> {
     Ok(sqlx::query_scalar::<_, Uuid>(
         r#"
-        SELECT a.id FROM message_image_assets ma
-        JOIN image_assets a ON a.id = ma.asset_id
-        WHERE ma.message_id = $1 AND ma.relation_type = 'generated' AND a.owner_id = $2
-        ORDER BY ma.sort_order
+        SELECT ir.asset_id
+        FROM image_tasks t
+        JOIN image_results ir ON ir.task_id = t.id
+        JOIN image_assets a ON a.id = ir.asset_id
+        WHERE t.conversation_id = $1
+          AND t.user_id = $2
+          AND t.status = 'succeeded'
+          AND a.owner_id = $2
+        ORDER BY t.created_at DESC, ir.result_index ASC
+        LIMIT 1
         "#,
     )
-    .bind(message_id)
+    .bind(conversation_id)
     .bind(user_id)
-    .fetch_all(&mut **tx)
+    .fetch_optional(&mut **tx)
     .await?)
+}
+
+fn append_previous_asset(
+    input_asset_ids: &mut Vec<Uuid>,
+    previous_asset_id: Option<Uuid>,
+) -> AppResult<()> {
+    let Some(previous_asset_id) = previous_asset_id else {
+        return Ok(());
+    };
+    if input_asset_ids.contains(&previous_asset_id) {
+        return Ok(());
+    }
+    if input_asset_ids.len() >= 10 {
+        return Err(AppError::Validation(
+            "input assets plus the previous conversation image must contain at most 10 items"
+                .to_owned(),
+        ));
+    }
+    input_asset_ids.push(previous_asset_id);
+    Ok(())
 }
 
 async fn load_text_context(
@@ -1836,57 +1860,6 @@ fn build_prompt(
         prompt.push_str(style);
     }
     Ok(prompt)
-}
-
-fn should_reference_previous(content: &str) -> bool {
-    let normalized = content.to_ascii_lowercase();
-    [
-        "上一张",
-        "上张",
-        "保持",
-        "继续",
-        "改成",
-        "换成",
-        "previous",
-        "keep",
-        "continue",
-        "change it",
-        "make it",
-    ]
-    .iter()
-    .any(|keyword| normalized.contains(keyword))
-}
-
-fn select_previous_asset(content: &str, candidates: &[Uuid]) -> AppResult<Option<Uuid>> {
-    match candidates {
-        [] => Ok(None),
-        [only] => Ok(Some(*only)),
-        many => {
-            let ordinals = [
-                ("第一", 0usize),
-                ("第1", 0),
-                ("first", 0),
-                ("第二", 1),
-                ("第2", 1),
-                ("second", 1),
-                ("第三", 2),
-                ("第3", 2),
-                ("third", 2),
-                ("第四", 3),
-                ("第4", 3),
-                ("fourth", 3),
-            ];
-            let normalized = content.to_ascii_lowercase();
-            if let Some((_, index)) = ordinals.iter().find(|(word, _)| normalized.contains(word)) {
-                return many.get(*index).copied().map(Some).ok_or_else(|| {
-                    AppError::Validation("the referenced image number does not exist".to_owned())
-                });
-            }
-            Err(AppError::Validation(
-                "the previous response contains multiple images; specify which image to continue from".to_owned(),
-            ))
-        }
-    }
 }
 
 #[derive(Debug, Serialize, FromRow)]
@@ -2212,18 +2185,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn selects_explicit_ordinal_from_previous_results() {
-        let ids = [Uuid::new_v4(), Uuid::new_v4()];
-        assert_eq!(
-            select_previous_asset("把第二张改成夜景", &ids).unwrap(),
-            Some(ids[1])
-        );
+    fn appends_the_previous_conversation_image_after_explicit_references() {
+        let explicit = Uuid::new_v4();
+        let previous = Uuid::new_v4();
+        let mut ids = vec![explicit];
+        append_previous_asset(&mut ids, Some(previous)).unwrap();
+        assert_eq!(ids, vec![explicit, previous]);
     }
 
     #[test]
-    fn refuses_to_guess_between_multiple_images() {
-        let ids = [Uuid::new_v4(), Uuid::new_v4()];
-        assert!(select_previous_asset("继续保持人物", &ids).is_err());
+    fn does_not_duplicate_an_explicitly_selected_previous_image() {
+        let previous = Uuid::new_v4();
+        let mut ids = vec![previous];
+        append_previous_asset(&mut ids, Some(previous)).unwrap();
+        assert_eq!(ids, vec![previous]);
     }
 
     #[test]
