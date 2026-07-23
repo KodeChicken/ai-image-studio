@@ -45,6 +45,20 @@ docker compose up --build
 
 打开 `http://127.0.0.1:3100`。
 
+首次镜像构建需要完整编译 Rust 依赖；Dockerfile 已为 pnpm、Cargo Registry 和 Cargo Target 配置 BuildKit 持久缓存，后续源码构建会复用依赖。仅重启现有镜像时不要使用 `--build`：
+
+```bash
+docker compose restart app worker
+```
+
+源码变化后可把构建和切换分开，避免误以为容器重启本身耗时：
+
+```bash
+docker compose build app
+docker compose run --rm --no-deps migrate
+docker compose up -d --no-build --no-deps --force-recreate app worker
+```
+
 首次启动默认账号：
 
 ```text
@@ -159,6 +173,20 @@ docker compose up --build
 ```
 
 Open `http://127.0.0.1:3100`.
+
+The first image build compiles the full Rust dependency graph. The Dockerfile now persists the pnpm store, Cargo registry, and Cargo target through BuildKit cache mounts. Restart an unchanged image without rebuilding it:
+
+```bash
+docker compose restart app worker
+```
+
+After source changes, keep compilation separate from migration and the short container switch:
+
+```bash
+docker compose build app
+docker compose run --rm --no-deps migrate
+docker compose up -d --no-build --no-deps --force-recreate app worker
+```
 
 Default first-run credentials:
 

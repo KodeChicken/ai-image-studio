@@ -68,7 +68,7 @@ Linux Compose 部署推荐专用 Unix Socket。Web 应用 `.env` 配置为：
 HOST_UPDATER_URL=
 HOST_UPDATER_SOCKET=/run/ai-image-studio-updater/host-updater.sock
 HOST_UPDATER_SOCKET_DIR=/run/ai-image-studio-updater
-UPDATE_MANIFEST_URL=https://releases.example.internal/release-manifest.json
+UPDATE_MANIFEST_URL=https://github.com/KodeChicken/ai-image-studio/releases/latest/download/release-manifest.json
 # 私有 CA 才需要；必须是容器内可读的绝对 PEM 路径。
 HTTP_CA_CERT_FILE=/app/config/internal-release-ca.crt
 ```
@@ -86,6 +86,50 @@ sha256sum /usr/local/libexec/ai-image-studio/execute-update.sh
 ```
 
 把第一列填入 `HOST_UPDATER_EXECUTOR_SHA256`。
+
+### 3.1 GitHub 正式发布配置
+
+仓库的 [`.github/workflows/release.yml`](../.github/workflows/release.yml) 会在推送 `vMAJOR.MINOR.PATCH` Tag 时自动：
+
+1. 重新执行后端和前端检查。
+2. 使用 Buildx 构建 `linux/amd64` 正式镜像并推送到 `ghcr.io/kodechicken/ai-image-studio`。
+3. 获取 Registry 返回的不可变镜像 Digest。
+4. 使用 Cosign 私钥对 `image@sha256:...` 签名并立即用公钥验证。
+5. 根据 `backend/migrations` 的最高版本生成 `release-manifest.json`。
+6. 创建 GitHub Release，上传 Manifest、`cosign.pub` 和校验和。
+
+首次发布前只需生成一次 Cosign 密钥：
+
+```bash
+cosign generate-key-pair
+```
+
+把 `cosign.key` 的完整内容和生成时输入的密码分别保存为 GitHub Actions Repository Secrets：
+
+- `COSIGN_PRIVATE_KEY`
+- `COSIGN_PASSWORD`
+
+私钥不得提交到仓库或复制到 VPS。发布完成后，VPS 只安装 Release 中的公钥：
+
+```bash
+curl --fail --location \
+  --output /tmp/ai-image-studio-cosign.pub \
+  https://github.com/KodeChicken/ai-image-studio/releases/latest/download/cosign.pub
+sudo install -m 0644 \
+  /tmp/ai-image-studio-cosign.pub \
+  /etc/ai-image-studio-updater/cosign.pub
+```
+
+确认 GHCR Package 对 VPS 可读。公开 Package 无需登录；私有 Package 必须先在 VPS 执行 `docker login ghcr.io`，并使用仅具有 `read:packages` 权限的 Token。
+
+正式发布示例：
+
+```bash
+git tag v0.1.1
+git push origin v0.1.1
+```
+
+不要重复使用或强制移动已发布 Tag。需要修复时发布新的 Patch 版本。
 
 ## 4. Release Manifest
 
@@ -111,7 +155,7 @@ sha256sum /usr/local/libexec/ai-image-studio/execute-update.sh
 
 下载文件以以上 snake_case 字段作为发布契约，正式执行器直接按此格式校验。Web 后端同时兼容读取历史 camelCase Manifest，但返回浏览器的管理 API 仍按前端约定序列化为 camelCase。
 
-正式镜像必须用与 `COSIGN_PUBLIC_KEY` 匹配的密钥签名。执行器按 `image@sha256:...` 拉取并执行 `cosign verify`，不会仅信任可变 Tag。
+正式镜像必须用与 `COSIGN_PUBLIC_KEY` 匹配的密钥签名。执行器按 `image@sha256:...` 拉取并执行 `cosign verify`，不会仅信任可变 Tag。Release Workflow 会生成该文件；VPS 上的 `COSIGN_PUBLIC_KEY` 应指向已人工安装并固定权限的公钥路径。
 
 ## 5. Local 与 S3 备份
 
@@ -138,9 +182,9 @@ sudo journalctl -u ai-image-studio-host-updater -f
 ## 7. 执行顺序
 
 1. 校验配置、数据库健康、Schema 兼容窗口和磁盘空间。
-2. 停止 `app` 与 `worker`，保持 PostgreSQL/Redis 运行，形成一致停写点。
-3. 备份数据库，并备份 Local 图片或验证 S3 独立备份证据。
-4. 按 Digest 拉取镜像并执行 Cosign 验证。
+2. 在旧服务继续运行时按 Digest 拉取镜像并执行 Cosign 验证；下载或签名失败不会造成业务停机。
+3. 停止 `app` 与 `worker`，保持 PostgreSQL/Redis 运行，形成一致停写点。
+4. 备份数据库，并备份 Local 图片或验证 S3 独立备份证据。
 5. 升级时运行目标镜像内的 SQLx Migrator，并核对最终 Schema。
 6. 在同一 Compose 网络启动临时候选容器，检查 `/api/v1/ready` 的数据库和 Redis 状态。
 7. 候选成功后写入 `release.env`，切换正式 `app/worker` 并再次健康检查。
@@ -168,9 +212,9 @@ bash host-updater/tests/executor_real_docker_drill.sh
 脚本会自动完成并断言：
 
 1. 从本地 HTTPS Release Manifest 读取固定 Digest。
-2. 停止隔离应用，生成真实 PostgreSQL Custom Dump。
-3. 把上传到主 MinIO Bucket 的图片镜像到独立备份 Bucket，并写入新鲜 S3 备份引用。
-4. 按 Digest 拉取镜像并执行真实 `cosign verify`。
+2. 在隔离应用仍然 Ready 时按 Digest 拉取镜像并执行真实 `cosign verify`。
+3. 停止隔离应用，生成真实 PostgreSQL Custom Dump。
+4. 把上传到主 MinIO Bucket 的图片镜像到独立备份 Bucket，并写入新鲜 S3 备份引用。
 5. 使用目标镜像运行 SQLx Migration，启动候选容器并检查 Ready。
 6. 切换正式 `app/worker`，核对 `release.env`、`history.json` 和 `backup-manifest.json`。
 7. 把数据库 Dump 恢复到新数据库，确认上传资产记录存在。

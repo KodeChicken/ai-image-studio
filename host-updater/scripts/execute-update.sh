@@ -284,18 +284,23 @@ AVAILABLE_KB=$(df -Pk "$BACKUP_ROOT" | awk 'NR == 2 {print $4}')
 [[ "$AVAILABLE_KB" =~ ^[0-9]+$ ]] || fail "could not determine free disk space"
 ((AVAILABLE_KB * 1024 >= MIN_FREE_BYTES)) || fail "insufficient free disk space for a safe update"
 
-emit_progress 10 entering_maintenance
+emit_progress 10 pulling_signed_image
+docker pull "$TARGET_IMAGE" >&2
+docker image inspect "$TARGET_IMAGE" >/dev/null
+cosign verify --key "$COSIGN_PUBLIC_KEY" "$TARGET_IMAGE" >&2
+
+emit_progress 40 entering_maintenance
 compose stop app worker >&2
 APP_STOPPED=true
 
-emit_progress 20 backing_up_database
+emit_progress 48 backing_up_database
 compose exec -T db pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
   --format=custom --no-owner --no-privileges >"$BACKUP_DIR/database.dump"
 [[ -s "$BACKUP_DIR/database.dump" ]] || fail "database backup is empty"
 
 STORAGE_BACKUP_REFERENCE=""
 if [[ "$STORAGE_DRIVER" == local ]]; then
-  emit_progress 28 backing_up_local_images
+  emit_progress 55 backing_up_local_images
   : >"$BACKUP_DIR/images-manifest.jsonl"
   while IFS= read -r -d '' path; do
     relative=${path#"$LOCAL_STORAGE_PATH"/}
@@ -331,20 +336,15 @@ jq -n \
   >"$BACKUP_DIR/backup-manifest.json"
 BACKUP_COMPLETE=true
 
-emit_progress 40 pulling_signed_image
-docker pull "$TARGET_IMAGE" >&2
-docker image inspect "$TARGET_IMAGE" >/dev/null
-cosign verify --key "$COSIGN_PUBLIC_KEY" "$TARGET_IMAGE" >&2
-
 if [[ "$ACTION" == upgrade ]]; then
-  emit_progress 55 running_migrations
+  emit_progress 65 running_migrations
   MIGRATION_STARTED=true
   compose_target "$TARGET_IMAGE" run --rm --no-deps migrate >&2
   MIGRATED_SCHEMA=$(database_schema)
   [[ "$MIGRATED_SCHEMA" == "$TARGET_SCHEMA" ]] || fail "database schema does not match manifest schema_target"
 fi
 
-emit_progress 68 starting_candidate
+emit_progress 75 starting_candidate
 DB_CONTAINER=$(compose ps -q db)
 [[ -n "$DB_CONTAINER" ]] || fail "database container is not running"
 COMPOSE_NETWORK=$(docker inspect --format '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{"\n"}}{{end}}' \
@@ -361,7 +361,7 @@ wait_ready "http://127.0.0.1:${CANDIDATE_PORT}/api/v1/ready" 60 || fail "candida
 docker rm --force "$CANDIDATE_NAME" >/dev/null
 CANDIDATE_NAME=""
 
-emit_progress 82 switching_release
+emit_progress 85 switching_release
 FINAL_SCHEMA=$(database_schema)
 write_release_env "$TARGET_IMAGE" "$TARGET_VERSION" "$TARGET_DIGEST" "$FINAL_SCHEMA"
 compose up --detach --no-deps app worker >&2

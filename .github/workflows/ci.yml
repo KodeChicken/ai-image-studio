@@ -125,3 +125,5 @@ jobs:
           context: .
           push: false
           tags: ai-image-studio:test
+          cache-from: type=gha,scope=container
+          cache-to: type=gha,mode=max,scope=container
