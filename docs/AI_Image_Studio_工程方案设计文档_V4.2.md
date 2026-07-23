@@ -234,6 +234,8 @@ pub enum ProviderType {
 - OpenAI Images API
 - 其他兼容 `/v1/images/generations`、`/v1/images/edits` 的服务
 
+生成数量遵循 OpenAI Images API 契约：`/v1/images/generations` 的 `n` 支持 1～10（DALL·E 3 仅支持 `n=1`），因此用户选择生成 2 张时，Adapter 默认只发送一次带 `n=2` 的请求并接收两个结果。部分兼容服务会在内部把 Images API 转换成 Responses API 的图片工具，而该工具不接受 `tools[0].n`；只有上游以 HTTP 400 明确返回 `n` 为未知参数时，Adapter 才移除 `n`，按目标数量发送多次单图请求并聚合结果。拆分后的某个单图请求若明确返回 `upstream did not return image output`，允许只重试该单图一次，不重新生成已经成功的图片；其他参数错误、内容审核拒绝或服务异常不得触发该重试，避免重复计费。流式单请求返回多个 `completed` 事件时必须保留全部最终图片，不能只保留最后一张。SSE `error` 必须转换为结构化 Provider 错误并向用户提供可操作的中文提示，不能直接展示上游 JSON。
+
 配置示例：
 
 ```yaml
@@ -292,7 +294,7 @@ Provider 可以返回 Base64、内联二进制或上游临时 URL，但这些都
 
 1. 获取图片字节；若上游返回 URL，由后端在受控超时、大小上限和 SSRF 防护下立即下载。
 2. 校验 HTTP 状态、MIME、Magic Number、文件大小和图片尺寸。
-3. 计算 SHA-256，并将原始图片文件写入本地持久卷或 S3 兼容对象存储。
+3. 对 OpenAI Compatible 的 GPT Image 2 明确尺寸请求执行精确尺寸校验；若上游像素不符，使用 Lanczos3 居中裁切重采样，再计算 SHA-256，并将最终图片文件写入本地持久卷或 S3 兼容对象存储。`size=auto` 保留上游原图。
 4. 写入 `image_assets` 和 `image_results` 元数据。
 5. 只有文件与元数据均持久化成功后，任务才允许进入 `succeeded`。
 
@@ -424,6 +426,8 @@ Authorization: Bearer <current-user-provider-key>
 
 模型级差异必须继续覆盖通用模型族 Schema。例如 GPT Image 2 的 `size` Schema 在常用尺寸选项之外标记 `allow_custom=true`，后端按最大边 3840、两边均为 16 的倍数、宽高比不超过 3:1、总像素 655,360～8,294,400 校验自定义分辨率；它不支持透明背景，也不允许设置 `input_fidelity`，因为输入图始终按高保真处理。GPT Image 1/1.5/mini 的 `input_fidelity=low|high` 仅在编辑请求中出现。DALL·E 2 使用 `256x256|512x512|1024x1024` 且最多 10 张，DALL·E 3 使用 `1024x1024|1792x1024|1024x1792` 且只能生成 1 张，其原生 `style=vivid|natural` 是真实 API 参数，而 GPT Image 的“电影感、摄影、插画”等 UI 风格不是原生参数。
 
+前端将 `size` 标注为“目标分辨率”，因为部分兼容 Provider 会接受该参数却返回不同的实际像素。平台先把目标尺寸原样发送给 Provider；对于 OpenAI Compatible 的 GPT Image 2，用户选择明确尺寸即表示要求最终文件具备该像素。若下载后解码尺寸不符，后端按与 `sub2api-imagegen --exact-size` 一致的语义，使用 Lanczos3 居中裁切重采样后再持久化；`size=auto` 不执行该处理。前端必须提示重采样可能发生且不会增加模型原生细节；`image_results.metadata` 记录 `resized`、`resizeMethod`、`sourceWidth`、`sourceHeight` 和 `requestedSize`，不得把重采样结果伪装成上游原生 4K。
+
 平台对浏览器的统一 SSE 与 OpenAI Compatible Provider 的原生 SSE 均默认开启。OpenAI Adapter 无论 `partial_images` 是否为 0，都会发送 `stream=true` 和 `Accept: text/event-stream`；`partial_images=0` 只表示不请求中间预览，不再切换为普通 JSON 响应。用户设置为 1～3 时，Adapter 增量解析 `image_generation.partial_image`/`image_edit.partial_image`，局部帧临时写入当前 Local/S3 存储并通过鉴权地址发送 `image.partial` 事件，5 分钟后删除。只有明确的 `image_generation.completed`/`image_edit.completed` 完成事件或规范化最终 `data` 响应才能作为正式 `image_assets`/`image_results` 结果持久化，不得把最后一张局部预览误认为最终结果。数据库不保存 Base64、公开 URL 或临时签名 URL。`stream` 是 Adapter 固定的传输策略，不作为可任意透传的模型参数展示，避免与平台面向浏览器的 SSE 开关混淆。
 
 Schema 合并顺序：
@@ -508,8 +512,12 @@ stateDiagram-v2
 flowchart LR
     P[Provider URL / Base64 / Binary] --> F[下载或解码到临时文件]
     F --> V[格式、大小与安全校验]
-    V --> H[计算 SHA-256]
-    H --> S[写入 Local Volume / S3]
+    V --> R{明确尺寸且像素不符?}
+    R -->|是| X[Lanczos3 居中裁切重采样]
+    R -->|否| H[保留上游像素]
+    X --> H
+    H --> C[计算 SHA-256]
+    C --> S[写入 Local Volume / S3]
     S --> M[写入 image_assets / image_results]
     M --> OK[任务 succeeded]
 ```
@@ -561,6 +569,8 @@ sequenceDiagram
 `task_events.id` 作为 SSE `id`。浏览器断线后使用 `GET /api/v1/tasks/{id}/events` 和 `Last-Event-ID` 恢复；无法维持 SSE 时回退到 `GET /api/v1/tasks/{id}` 轮询。断开浏览器连接不自动取消后台任务。
 
 `stream.reconnecting` 和 `stream.polling` 是前端连接状态，不是后端任务事件，不写入 `task_events`。首次流中断且已经获得 `task_id` 后，页面显示“正在恢复连接”；每次恢复请求携带最后收到的持久化事件 ID。超过恢复次数后显示“正在确认任务状态”并轮询任务，取得 `succeeded/failed/cancelled` 后转换为对应终态展示。不得把这两个连接状态冒充 Provider 生成阶段或常驻在线状态。
+
+`image_tasks.started_at` 表示当前或最后一次实际执行尝试的开始时间，不表示任务首次创建时间。任务从 `retrying` 再次进入 `processing` 时必须重置 `started_at`，终态耗时按本次 `finished_at - started_at` 计算；历史累计过程由 `task_events` 和 `request_logs` 保留。助手消息处于重试/流式状态时不得继续展示上一次终态的“完成时间/耗时”，前端活动计时在每次 `provider.processing` 事件到达时重新开始。
 
 SSE 连接是任务级资源，不是应用级在线状态。页面不得在尚无活动任务时显示常驻“SSE 已连接”；发送生成消息并取得 `task_id` 后才订阅该任务事件，连接、恢复和终态展示在所属助手消息中，收到终态后关闭连接。
 
@@ -1339,7 +1349,7 @@ erDiagram
 | `image_assets` | 保存平台已落盘图片的资产元数据，不依赖可能失效的上游图片链接。 | `owner_id → users`；`storage_driver` 区分 `local`/`s3`，`storage_container + storage_key` 定位真实文件。 |
 | `message_image_assets` | 建立消息与图片资产的多对多关系，标记附件、上下文引用或生成结果。 | `message_id → conversation_messages`，`asset_id → image_assets`。 |
 | `task_input_images` | 固化某次图片编辑实际提交给模型的输入图、顺序和角色。 | `task_id → image_tasks`，`asset_id → image_assets`；用于多轮上下文审计与复现。 |
-| `image_results` | 记录一次任务输出的第几张图片，并连接到已持久化的图片资产。 | `task_id → image_tasks`，`asset_id → image_assets`；一个资产只属于一个生成结果。 |
+| `image_results` | 记录一次任务输出的第几张图片，并连接到已持久化的图片资产；`metadata` 审计精确尺寸重采样的源尺寸、目标尺寸和算法。 | `task_id → image_tasks`，`asset_id → image_assets`；一个资产只属于一个生成结果。 |
 | `task_events` | 以递增事件 ID 保存任务状态变化和 SSE 事件数据；原生流式局部帧只保存短期存储定位元数据，不保存 Base64。 | `task_id → image_tasks`；用于进度追踪、局部预览、审计和 `Last-Event-ID` 续传。 |
 | `request_logs` | 保存 API/上游请求的结构化诊断信息，不记录凭据和完整敏感正文。 | 可选 `task_id → image_tasks`；即使任务被清理，日志仍可保留。 |
 | `usage_records` | 保存任务用量、费用及当时的价格快照，避免后续改价影响历史账目。 | 可选关联任务/用户，并通过 `(provider_id, model_id)` 关联准确的模型归属。 |
@@ -1648,7 +1658,7 @@ CREATE INDEX ix_task_events_task_id_id
 - `storage_container` 在本地存储中是逻辑卷标识，在 S3 中是 Bucket 名称；`storage_key` 是后端生成并规范化的相对路径或 Object Key，禁止直接使用用户文件名或保存带域名的 URL。
 - `sha256`、`file_size_bytes`、`mime_type` 用于完整性校验，`width` 和 `height` 用于页面展示与安全限制。
 - `conversations` 保存会话级默认 Provider、模型和上下文摘要；`conversation_messages` 保存有序的用户/助手消息，并通过 `parent_message_id` 支持重新生成和分支。
-- `message_image_assets` 保存消息展示和上下文引用关系；`task_input_images` 保存真正发给 Provider 的上传图、参考图和蒙版图；`image_results` 保存生成结果与真实文件的关系。
+- `message_image_assets` 保存消息展示和上下文引用关系；`task_input_images` 保存真正发给 Provider 的上传图、参考图和蒙版图；`image_results` 保存生成结果与真实文件的关系，其 `metadata` 在发生精确尺寸后处理时记录 `resized=true`、`resizeMethod`、`sourceWidth/sourceHeight` 与 `requestedSize`。
 - 每个 `image_task` 必须同时关联会话、本轮用户消息和对应助手消息，复合外键保证三者属于同一会话。
 - `original_filename` 只用于用户上传文件的展示，不能参与磁盘路径拼接。
 - 不设计 `public_url` 字段。应用访问地址和 S3 签名 URL 都在请求时动态生成，不作为数据库事实来源。

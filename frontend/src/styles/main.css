@@ -211,6 +211,7 @@ body.parameter-panel-resizing * { cursor: col-resize !important; }
 .parameter-group.advanced { display: block; }
 .parameter-group h3 { margin: 0; font-size: 13px; }
 .parameter-group label, .parameter-field { display: grid; gap: 7px; color: var(--muted); font-size: 11px; text-transform: capitalize; }
+.parameter-hint { font-size: 10px; line-height: 1.45; text-transform: none; }
 .parameter-group label, .parameter-field, .parameter-group .n-select, .parameter-group .n-input, .parameter-group .n-input-number { min-width: 0; width: 100%; }
 .parameter-group.advanced summary { display: flex; justify-content: space-between; cursor: pointer; font-size: 13px; font-weight: 700; }
 .parameter-group.advanced summary span { color: var(--muted); font-weight: 400; }

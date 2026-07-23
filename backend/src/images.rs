@@ -10,7 +10,7 @@ use axum::{
 };
 use bytes::Bytes;
 use chrono::{Datelike, Utc};
-use image::ImageReader;
+use image::{ImageFormat, ImageReader, imageops::FilterType};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use sqlx::FromRow;
@@ -321,4 +321,56 @@ pub(crate) fn validate_image(bytes: Bytes) -> AppResult<ValidatedImage> {
         height: height as i32,
         sha256,
     })
+}
+
+pub(crate) fn resize_exact(
+    image: ValidatedImage,
+    width: u32,
+    height: u32,
+) -> AppResult<ValidatedImage> {
+    if width == 0 || height == 0 || width > 16_384 || height > 16_384 {
+        return Err(AppError::Validation(
+            "target image dimensions are outside the supported range".to_owned(),
+        ));
+    }
+    if image.width == width as i32 && image.height == height as i32 {
+        return Ok(image);
+    }
+
+    let format = match image.extension {
+        "png" => ImageFormat::Png,
+        "jpg" => ImageFormat::Jpeg,
+        "webp" => ImageFormat::WebP,
+        _ => {
+            return Err(AppError::Validation(
+                "unsupported image format for resizing".to_owned(),
+            ));
+        }
+    };
+    let decoded = image::load_from_memory_with_format(&image.bytes, format)
+        .map_err(|_| AppError::Validation("image data is corrupted".to_owned()))?;
+    let resized = decoded.resize_to_fill(width, height, FilterType::Lanczos3);
+    let mut output = Cursor::new(Vec::new());
+    resized
+        .write_to(&mut output, format)
+        .map_err(|error| AppError::Internal(error.into()))?;
+    validate_image(Bytes::from(output.into_inner()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resizes_and_center_crops_to_the_exact_dimensions() {
+        let source = image::DynamicImage::new_rgb8(8, 4);
+        let mut encoded = Cursor::new(Vec::new());
+        source.write_to(&mut encoded, ImageFormat::Png).unwrap();
+        let validated = validate_image(Bytes::from(encoded.into_inner())).unwrap();
+
+        let resized = resize_exact(validated, 16, 16).unwrap();
+
+        assert_eq!((resized.width, resized.height), (16, 16));
+        assert_eq!(resized.mime_type, "image/png");
+    }
 }

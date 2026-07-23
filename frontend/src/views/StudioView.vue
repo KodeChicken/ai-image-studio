@@ -485,7 +485,11 @@ function handleTaskEvent(event: TaskEvent) {
     taskStage.value = '等待生成资源'
     if (typeof event.data.taskId === 'string') activeTaskId.value = event.data.taskId
   }
-  if (event.type === 'task.progress') taskStage.value = stageText(String(event.data.stage ?? ''))
+  if (event.type === 'task.progress') {
+    const stage = String(event.data.stage ?? '')
+    if (stage === 'provider.processing') startTaskTimer()
+    taskStage.value = stageText(stage)
+  }
   if (event.type === 'image.partial' && typeof event.data.contentUrl === 'string') {
     partialPreview.value = {
       contentUrl: event.data.contentUrl,
@@ -541,6 +545,8 @@ async function retryTask(item: ConversationMessage) {
     item.taskErrorCode = null
     item.taskErrorMessage = null
     item.taskRetryCount = (item.taskRetryCount ?? 0) + 1
+    item.taskStartedAt = null
+    item.taskFinishedAt = null
     activeTaskId.value = result.taskId
     await streamTask(result.taskId, handleTaskEvent, {
       initialLastEventId: String(result.lastEventId),
@@ -869,7 +875,7 @@ async function scrollBottom() {
                 </figcaption>
               </figure>
             </div>
-            <time class="message-time" :datetime="item.taskFinishedAt || item.createdAt">{{ messageTimeText(item) }}</time>
+            <time v-if="item.status !== 'streaming'" class="message-time" :datetime="item.taskFinishedAt || item.createdAt">{{ messageTimeText(item) }}</time>
             <div v-if="messageBranch(item).total > 1 || item.role === 'assistant'" class="message-footer">
               <div v-if="messageBranch(item).total > 1" class="branch-switcher" aria-label="消息分支切换">
                 <button
@@ -982,7 +988,7 @@ async function scrollBottom() {
         <section class="parameter-group base-parameters">
           <h3>基础参数</h3>
           <label>宽高比<n-select :value="selectValue(parameters.aspect_ratio)" :options="aspectRatioOptions" @update:value="value => setParameter('aspect_ratio', value)" /></label>
-          <label v-if="schema.size">分辨率<n-select :value="selectValue(parameters.size)" :options="sizeOptions" :tag="schema.size.allow_custom === true" filterable @update:value="value => setParameter('size', value)" /></label>
+          <label v-if="schema.size">目标分辨率<n-select :value="selectValue(parameters.size)" :options="sizeOptions" :tag="schema.size.allow_custom === true" filterable @update:value="value => setParameter('size', value)" /><small class="parameter-hint">明确尺寸时，若上游像素不符将居中裁切并高质量重采样；Auto 保留原图。</small></label>
           <label v-if="schema.quality">质量<n-select :value="selectValue(parameters.quality)" :options="qualityOptions" @update:value="value => setParameter('quality', value)" /></label>
           <label v-if="schema.n">生成数量<n-input-number :value="numberValue(parameters.n)" :min="schema.n.min ?? 1" :max="schema.n.max ?? 10" @update:value="value => setParameter('n', value)" /></label>
           <div class="parameter-field"><span>创作风格</span>

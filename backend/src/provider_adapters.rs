@@ -67,12 +67,14 @@ impl fmt::Display for ProviderHttpError {
 
 impl std::error::Error for ProviderHttpError {}
 
+#[derive(Clone)]
 pub(crate) struct ProviderInput {
     pub filename: String,
     pub mime_type: String,
     pub bytes: Bytes,
 }
 
+#[derive(Clone)]
 pub(crate) struct ProviderRequest {
     pub model: String,
     pub prompt: String,
@@ -421,6 +423,85 @@ async fn call_openai_images(
     grok: bool,
     partial_sender: Option<PartialImageSender>,
 ) -> anyhow::Result<Vec<ProviderImage>> {
+    let requested_count = request
+        .parameters
+        .get("n")
+        .and_then(Value::as_u64)
+        .unwrap_or(1)
+        .clamp(1, 10) as usize;
+    let can_retry_without_count = request.parameters.get("n").is_some();
+    let fallback_request = request.clone();
+    match call_openai_images_once(
+        client,
+        base_url,
+        credential,
+        request,
+        edit,
+        grok,
+        partial_sender.clone(),
+    )
+    .await
+    {
+        Ok(images) => Ok(images),
+        Err(error) if can_retry_without_count && provider_rejects_image_count(&error) => {
+            tracing::warn!(
+                requested_count,
+                "provider rejected the image count parameter; retrying one request per image"
+            );
+            let mut single_request = fallback_request;
+            if let Some(parameters) = single_request.parameters.as_object_mut() {
+                parameters.remove("n");
+            }
+            let mut images = Vec::with_capacity(requested_count);
+            for image_index in 0..requested_count {
+                let result = call_openai_images_once(
+                    client,
+                    base_url,
+                    credential,
+                    single_request.clone(),
+                    edit,
+                    grok,
+                    partial_sender.clone(),
+                )
+                .await;
+                match result {
+                    Ok(single_images) => images.extend(single_images),
+                    Err(error) if provider_returned_no_image_output(&error) => {
+                        tracing::warn!(
+                            image_index = image_index + 1,
+                            "provider returned no image output; retrying the single-image request once"
+                        );
+                        images.extend(
+                            call_openai_images_once(
+                                client,
+                                base_url,
+                                credential,
+                                single_request.clone(),
+                                edit,
+                                grok,
+                                partial_sender.clone(),
+                            )
+                            .await?,
+                        );
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            Ok(images)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+async fn call_openai_images_once(
+    client: &Client,
+    base_url: &str,
+    credential: &SecretString,
+    request: ProviderRequest,
+    edit: bool,
+    grok: bool,
+    partial_sender: Option<PartialImageSender>,
+) -> anyhow::Result<Vec<ProviderImage>> {
     let response_limit = image_response_limit(&request);
     let parameters = openai_parameters(&request.parameters, grok, &request.model, edit);
     let native_stream = parameters
@@ -481,6 +562,38 @@ async fn call_openai_images(
             read_json(response, response_limit, "image generation").await?;
         Ok(body.data)
     }
+}
+
+fn provider_rejects_image_count(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        let Some(error) = cause.downcast_ref::<ProviderHttpError>() else {
+            return false;
+        };
+        if error.status != StatusCode::BAD_REQUEST {
+            return false;
+        }
+        let message = error
+            .message
+            .as_deref()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let unknown_parameter = error.code.as_deref() == Some("unknown_parameter")
+            || message.contains("unknown parameter");
+        unknown_parameter
+            && (message.contains("tools[0].n")
+                || message.contains("parameter: 'n'")
+                || message.contains("parameter: \"n\""))
+    })
+}
+
+fn provider_returned_no_image_output(error: &anyhow::Error) -> bool {
+    structured_provider_error(error).is_some_and(|error| {
+        error.code.as_deref() == Some("upstream_no_image_output")
+            || error
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("upstream did not return image output"))
+    })
 }
 
 async fn call_gemini(
@@ -774,7 +887,7 @@ fn sse_event_boundary(body: &[u8]) -> Option<(usize, usize)> {
 #[derive(Default)]
 struct OpenAiImageStreamState {
     final_response: Option<Vec<ProviderImage>>,
-    final_image: Option<ProviderImage>,
+    final_images: Vec<ProviderImage>,
 }
 
 impl OpenAiImageStreamState {
@@ -794,8 +907,22 @@ impl OpenAiImageStreamState {
         }
         let value: Value = serde_json::from_str(&payload)
             .context("invalid provider image generation stream event")?;
-        if let Some(error) = value.get("error") {
-            bail!("provider image generation stream failed: {error}");
+        if value.get("error").is_some() {
+            let mut error = parse_provider_http_error(
+                StatusCode::BAD_GATEWAY,
+                "image generation stream",
+                None,
+                payload.as_bytes(),
+            );
+            if error.code.is_none()
+                && error
+                    .message
+                    .as_deref()
+                    .is_some_and(|message| message.contains("upstream did not return image output"))
+            {
+                error.code = Some("upstream_no_image_output".to_owned());
+            }
+            return Err(anyhow::Error::new(error));
         }
         if value.get("data").is_some() {
             self.final_response = Some(
@@ -822,7 +949,7 @@ impl OpenAiImageStreamState {
                 return Ok(());
             }
             if event_type.is_some_and(|event_type| event_type.ends_with(".completed")) {
-                self.final_image = Some(ProviderImage {
+                self.final_images.push(ProviderImage {
                     url: None,
                     b64_json: Some(b64_json.to_owned()),
                 });
@@ -835,9 +962,10 @@ impl OpenAiImageStreamState {
         if let Some(images) = self.final_response.filter(|images| !images.is_empty()) {
             return Ok(images);
         }
-        Ok(vec![self.final_image.context(
-            "provider image stream ended before a completed image was received",
-        )?])
+        if self.final_images.is_empty() {
+            bail!("provider image stream ended before a completed image was received");
+        }
+        Ok(self.final_images)
     }
 }
 
@@ -990,6 +1118,12 @@ pub(crate) fn provider_error_is_retryable(error: &anyhow::Error) -> bool {
 
 pub(crate) fn provider_error_user_message(error: &anyhow::Error) -> Option<String> {
     let error = structured_provider_error(error)?;
+    if error.code.as_deref() == Some("upstream_no_image_output") {
+        return Some(
+            "上游已完成请求但没有返回图片。请明确人物为成年人、调整可能触发安全策略的描述，或降低分辨率后重试；如果中性提示词仍然失败，请检查 Provider 上游图片账号是否可用。"
+                .to_owned(),
+        );
+    }
     if error.code.as_deref() == Some("moderation_blocked")
         || error.message.as_deref().is_some_and(|message| {
             let message = message.to_ascii_lowercase();
@@ -1114,7 +1248,7 @@ mod tests {
 
     use axum::{
         Router,
-        body::Body,
+        body::{Body, to_bytes},
         http::{Request, StatusCode},
         response::Response,
         routing::any,
@@ -1425,6 +1559,135 @@ mod tests {
         assert_eq!(images[0].b64_json.as_deref(), Some("aW1hZ2U="));
     }
 
+    #[tokio::test]
+    async fn openai_contract_keeps_supported_image_count_in_one_request() {
+        let bodies = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded_bodies = bodies.clone();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = Router::new().fallback(any(move |request: Request<Body>| {
+            let bodies = recorded_bodies.clone();
+            async move {
+                let body = to_bytes(request.into_body(), usize::MAX).await.unwrap();
+                let body: Value = serde_json::from_slice(&body).unwrap();
+                bodies.lock().unwrap().push(body);
+                Response::builder()
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "data": [
+                                { "b64_json": "aW1hZ2UtMQ==" },
+                                { "b64_json": "aW1hZ2UtMg==" }
+                            ]
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap()
+            }
+        }));
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let images = create_images(
+            "openai-compatible",
+            "generation",
+            &Client::new(),
+            &format!("http://{address}"),
+            &SecretString::from("secret".to_owned()),
+            ProviderRequest {
+                model: "gpt-image-2".to_owned(),
+                prompt: "draw two cats".to_owned(),
+                parameters: json!({ "n": 2, "size": "1024x1024" }),
+                inputs: Vec::new(),
+                max_image_bytes: 1024,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(images.len(), 2);
+        let bodies = bodies.lock().unwrap();
+        assert_eq!(bodies.len(), 1);
+        assert_eq!(bodies[0]["n"], json!(2));
+    }
+
+    #[tokio::test]
+    async fn openai_contract_splits_requests_and_retries_one_no_output_failure() {
+        let bodies = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded_bodies = bodies.clone();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = Router::new().fallback(any(move |request: Request<Body>| {
+            let bodies = recorded_bodies.clone();
+            async move {
+                let body = to_bytes(request.into_body(), usize::MAX).await.unwrap();
+                let body: Value = serde_json::from_slice(&body).unwrap();
+                let request_index = {
+                    let mut bodies = bodies.lock().unwrap();
+                    bodies.push(body.clone());
+                    bodies.len()
+                };
+                if body.get("n").is_some() {
+                    return Response::builder()
+                        .status(StatusCode::BAD_REQUEST)
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            json!({
+                                "error": {
+                                    "message": "Unknown parameter: 'tools[0].n'.",
+                                    "type": "invalid_request_error",
+                                    "code": "unknown_parameter"
+                                }
+                            })
+                            .to_string(),
+                        ))
+                        .unwrap();
+                }
+                if request_index == 2 {
+                    return Response::builder()
+                        .header("content-type", "text/event-stream")
+                        .body(Body::from(concat!(
+                            "event: error\n",
+                            "data: {\"error\":{\"message\":\"upstream did not return image output\",\"type\":\"upstream_error\"}}\n\n"
+                        )))
+                        .unwrap();
+                }
+                Response::builder()
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({ "data": [{ "b64_json": "aW1hZ2U=" }] }).to_string(),
+                    ))
+                    .unwrap()
+            }
+        }));
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let images = create_images(
+            "openai-compatible",
+            "generation",
+            &Client::new(),
+            &format!("http://{address}"),
+            &SecretString::from("secret".to_owned()),
+            ProviderRequest {
+                model: "gpt-image-2".to_owned(),
+                prompt: "draw two cats".to_owned(),
+                parameters: json!({ "n": 2, "size": "1024x1024" }),
+                inputs: Vec::new(),
+                max_image_bytes: 1024,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(images.len(), 2);
+        let bodies = bodies.lock().unwrap();
+        assert_eq!(bodies.len(), 4);
+        assert_eq!(bodies[0]["n"], json!(2));
+        assert!(bodies[1].get("n").is_none());
+        assert!(bodies[2].get("n").is_none());
+        assert!(bodies[3].get("n").is_none());
+        assert!(bodies.iter().all(|body| body["size"] == "1024x1024"));
+    }
+
     #[test]
     fn openai_auto_size_uses_model_specific_aspect_ratio_mapping() {
         let gpt_image_2 = openai_parameters(
@@ -1475,6 +1738,40 @@ mod tests {
         .unwrap();
         assert_eq!(images.len(), 1);
         assert_eq!(images[0].b64_json.as_deref(), Some("ZmluYWw="));
+    }
+
+    #[test]
+    fn parses_all_completed_images_from_one_streamed_request() {
+        let images = parse_openai_image_stream(concat!(
+            "event: image_generation.completed\n",
+            "data: {\"type\":\"image_generation.completed\",\"b64_json\":\"aW1hZ2UtMQ==\"}\n\n",
+            "event: image_generation.completed\n",
+            "data: {\"type\":\"image_generation.completed\",\"b64_json\":\"aW1hZ2UtMg==\"}\n\n"
+        ))
+        .unwrap();
+        assert_eq!(images.len(), 2);
+        assert_eq!(images[0].b64_json.as_deref(), Some("aW1hZ2UtMQ=="));
+        assert_eq!(images[1].b64_json.as_deref(), Some("aW1hZ2UtMg=="));
+    }
+
+    #[test]
+    fn maps_no_output_stream_error_to_a_retryable_user_message() {
+        let error = parse_openai_image_stream(concat!(
+            "event: error\n",
+            "data: {\"error\":{\"message\":\"upstream did not return image output\",\"type\":\"upstream_error\"}}\n\n"
+        ))
+        .unwrap_err();
+
+        assert_eq!(
+            provider_error_code(&error),
+            Some("upstream_no_image_output")
+        );
+        assert!(provider_error_is_retryable(&error));
+        assert!(
+            provider_error_user_message(&error)
+                .unwrap()
+                .contains("上游已完成请求但没有返回图片")
+        );
     }
 
     #[test]

@@ -709,6 +709,13 @@ async fn process_task(state: &AppState, task_id: Uuid) -> anyhow::Result<()> {
                 return Err(anyhow::anyhow!(error.to_string()));
             }
         };
+        let (validated, result_metadata) = match normalize_result_size(&task, validated) {
+            Ok(result) => result,
+            Err(error) => {
+                cleanup_task_assets(state, &task, &completed_assets).await;
+                return Err(error);
+            }
+        };
         let asset = match images::persist_asset(state, task.user_id, None, validated).await {
             Ok(asset) => asset,
             Err(error) => {
@@ -716,7 +723,7 @@ async fn process_task(state: &AppState, task_id: Uuid) -> anyhow::Result<()> {
                 return Err(anyhow::anyhow!(error.to_string()));
             }
         };
-        if let Err(error) = link_result(state, &task, &asset, index as i32).await {
+        if let Err(error) = link_result(state, &task, &asset, index as i32, result_metadata).await {
             compensate_asset(state, task.user_id, asset.id).await;
             cleanup_task_assets(state, &task, &completed_assets).await;
             return Err(error);
@@ -1344,12 +1351,16 @@ async fn link_result(
     task: &ProcessingTask,
     asset: &ImageAssetSummary,
     index: i32,
+    metadata: Value,
 ) -> anyhow::Result<()> {
     let mut tx = state.db.begin().await?;
-    sqlx::query("INSERT INTO image_results (task_id, asset_id, result_index) VALUES ($1, $2, $3)")
+    sqlx::query(
+        "INSERT INTO image_results (task_id, asset_id, result_index, metadata) VALUES ($1, $2, $3, $4)",
+    )
         .bind(task.id)
         .bind(asset.id)
         .bind(index)
+        .bind(&metadata)
         .execute(&mut *tx)
         .await?;
     sqlx::query(
@@ -1369,11 +1380,54 @@ async fn link_result(
         "image.completed",
         None,
         None,
-        json!({ "taskId": task.id, "asset": asset }),
+        json!({ "taskId": task.id, "asset": asset, "metadata": metadata }),
     )
     .await?;
     tx.commit().await?;
     Ok(())
+}
+
+fn normalize_result_size(
+    task: &ProcessingTask,
+    image: images::ValidatedImage,
+) -> anyhow::Result<(images::ValidatedImage, Value)> {
+    let Some((target_width, target_height)) = exact_size_target(task) else {
+        return Ok((image, json!({})));
+    };
+    if image.width == target_width as i32 && image.height == target_height as i32 {
+        return Ok((image, json!({})));
+    }
+
+    let source_width = image.width;
+    let source_height = image.height;
+    let resized = images::resize_exact(image, target_width, target_height)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    Ok((
+        resized,
+        json!({
+            "resized": true,
+            "resizeMethod": "lanczos3-center-crop",
+            "sourceWidth": source_width,
+            "sourceHeight": source_height,
+            "requestedSize": format!("{target_width}x{target_height}")
+        }),
+    ))
+}
+
+fn exact_size_target(task: &ProcessingTask) -> Option<(u32, u32)> {
+    if task.provider_type != "openai-compatible"
+        || !task.upstream_model_id.eq_ignore_ascii_case("gpt-image-2")
+    {
+        return None;
+    }
+    let value = task.request_params.get("size")?.as_str()?.trim();
+    if value.eq_ignore_ascii_case("auto") {
+        return None;
+    }
+    let (width, height) = value.split_once('x')?;
+    let width = width.parse::<u32>().ok()?;
+    let height = height.parse::<u32>().ok()?;
+    (width > 0 && height > 0).then_some((width, height))
 }
 
 async fn compensate_asset(state: &AppState, owner_id: Uuid, asset_id: Uuid) {
@@ -1579,7 +1633,7 @@ async fn transition_task(
 ) -> anyhow::Result<bool> {
     let mut tx = state.db.begin().await?;
     let changed = sqlx::query(
-        "UPDATE image_tasks SET status = $1, started_at = COALESCE(started_at, NOW()), updated_at = NOW() WHERE id = $2 AND status = ANY($3)",
+        "UPDATE image_tasks SET status = $1, started_at = CASE WHEN status = 'retrying' THEN NOW() ELSE COALESCE(started_at, NOW()) END, updated_at = NOW() WHERE id = $2 AND status = ANY($3)",
     )
     .bind(to)
     .bind(task_id)
@@ -2317,5 +2371,27 @@ mod tests {
             validate_task_parameters(&json!({ "size": "3840x3840" }), &schema, "generation")
                 .is_err()
         );
+    }
+
+    #[test]
+    fn exact_size_target_only_applies_to_explicit_gpt_image_2_sizes() {
+        let mut task = ProcessingTask {
+            id: Uuid::new_v4(),
+            user_id: Uuid::new_v4(),
+            assistant_message_id: Uuid::new_v4(),
+            provider_id: Uuid::new_v4(),
+            model_id: Uuid::new_v4(),
+            provider_type: "openai-compatible".to_owned(),
+            model_key: "gpt-image-2".to_owned(),
+            operation: "generation".to_owned(),
+            prompt: "test".to_owned(),
+            request_params: json!({ "size": "3840x2160" }),
+            upstream_model_id: "gpt-image-2".to_owned(),
+            trace_id: "trace".to_owned(),
+        };
+        assert_eq!(exact_size_target(&task), Some((3840, 2160)));
+
+        task.request_params = json!({ "size": "auto" });
+        assert_eq!(exact_size_target(&task), None);
     }
 }
