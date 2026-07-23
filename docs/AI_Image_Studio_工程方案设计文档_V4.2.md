@@ -2036,7 +2036,7 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-ai_image_studio}
       POSTGRES_USER: ${POSTGRES_USER:-ai_image_studio}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-18843de4f2e37455bedfe7e9fad84ab8f70e456c053f266a}
     volumes:
       - ./data/postgres:/var/lib/postgresql/data
     healthcheck:
@@ -2080,16 +2080,16 @@ BOOTSTRAP_ADMIN_USERNAME=admin
 BOOTSTRAP_ADMIN_PASSWORD=123456
 BOOTSTRAP_ADMIN_FORCE_PASSWORD_CHANGE=true
 
-SESSION_SECRET=change-me-to-a-random-session-secret-at-least-32-characters
+SESSION_SECRET=cdb19bd3f1f73878156c78857294cbc6d6eb8ab9e8b7fb09462a62859a936169
 SESSION_TTL_SECONDS=86400
-SESSION_COOKIE_SECURE=false
-CREDENTIAL_MASTER_KEY=replace-with-base64-encoded-32-byte-key
+SESSION_COOKIE_SECURE=true
+CREDENTIAL_MASTER_KEY=ad0XQKe7dDLx+hgksLlK9NCGYASkPUDq4VUV7TZcfEU=
 
-DATABASE_URL=postgres://ai_image_studio:change_me@db:5432/ai_image_studio
+DATABASE_URL=postgres://ai_image_studio:18843de4f2e37455bedfe7e9fad84ab8f70e456c053f266a@db:5432/ai_image_studio
 DATABASE_MAX_CONNECTIONS=10
 POSTGRES_DB=ai_image_studio
 POSTGRES_USER=ai_image_studio
-POSTGRES_PASSWORD=change_me
+POSTGRES_PASSWORD=18843de4f2e37455bedfe7e9fad84ab8f70e456c053f266a
 
 STORAGE_DRIVER=local
 STORAGE_LOCAL_PATH=/app/data/images
@@ -2144,7 +2144,7 @@ RUST_LOG=ai_image_studio=info,tower_http=info
 - 首次启动且数据库中不存在管理员时，使用 `BOOTSTRAP_ADMIN_USERNAME` 和 `BOOTSTRAP_ADMIN_PASSWORD` 创建管理员；密码立即使用 Argon2id 哈希后写入 `users.password_hash`，明文不得写数据库或日志。
 - 默认初始化账号为 `admin / 123456`。该弱密码仅用于首次登录，`BOOTSTRAP_ADMIN_FORCE_PASSWORD_CHANGE=true` 时必须先修改密码才能访问其他接口；生产部署应在首次启动前覆盖该值。
 - Bootstrap 只创建不存在的管理员，后续修改环境变量不得覆盖现有管理员密码。管理员完成首次改密后，健康检查不再报告默认密码告警。
-- `SESSION_SECRET` 用于签发 HttpOnly 会话 Cookie；`SESSION_COOKIE_SECURE` 仅在应用通过 HTTPS 提供服务时设为 `true`；`CREDENTIAL_MASTER_KEY` 是 32 字节随机主密钥的 Base64，用于加密用户 Provider API Key。密钥必须在生产部署前替换，且不得提交到仓库。
+- `SESSION_SECRET` 用于签发 HttpOnly 会话 Cookie；Docker Compose 默认按 HTTPS 生产部署设置 `SESSION_COOKIE_SECURE=true`；`CREDENTIAL_MASTER_KEY` 是 32 字节随机主密钥的 Base64，用于加密用户 Provider API Key。仓库中的值是便于首次启动的公开默认值，正式对外服务前必须通过不纳入版本控制的 `.env` 覆盖 Session、凭据加密和数据库密钥。
 - `STORAGE_DRIVER` 只允许 `local` 或 `s3`，默认 `local`。
 - `STORAGE_DRIVER` 和其他环境变量作为首次启动默认值；管理员保存过存储配置后，`system_settings` 中的非敏感目标配置在下次启动时生效。管理接口返回 `restart_required=true`，不得伪装成即时热切换。
 - 当 `STORAGE_DRIVER=s3` 时，`STORAGE_S3_ENABLED`、Bucket、Endpoint（AWS S3 可留空）、Region 和凭据必须通过启动校验。
@@ -2951,7 +2951,7 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-ai_image_studio}
       POSTGRES_USER: ${POSTGRES_USER:-ai_image_studio}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-18843de4f2e37455bedfe7e9fad84ab8f70e456c053f266a}
     volumes:
       - ./data/postgres:/var/lib/postgresql/data
     healthcheck:
