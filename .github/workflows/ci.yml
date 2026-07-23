@@ -1,0 +1,127 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: ai_image_studio
+          POSTGRES_USER: ai_image_studio
+          POSTGRES_PASSWORD: test_password
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ai_image_studio -d ai_image_studio"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://ai_image_studio:test_password@127.0.0.1:5432/ai_image_studio
+      TEST_MIGRATION_UPGRADE: "1"
+      SESSION_SECRET: ci-session-secret-at-least-32-characters
+      CREDENTIAL_MASTER_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      STORAGE_LOCAL_PATH: ${{ runner.temp }}/ai-image-studio-images
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Check Host Updater executor shell
+        run: docker run --rm --volume "${PWD}:/mnt:ro" koalaman/shellcheck:v0.10.0 /mnt/host-updater/scripts/execute-update.sh /mnt/host-updater/tests/executor_failure_drill.sh /mnt/host-updater/tests/executor_success_drill.sh
+      - name: Drill Host Updater successful release switching
+        run: bash host-updater/tests/executor_success_drill.sh
+      - name: Drill Host Updater migration failure recovery
+        run: bash host-updater/tests/executor_failure_drill.sh
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - name: Verify Redis queue and independent worker
+        shell: pwsh
+        run: ./backend/tests/redis_worker_integration.ps1
+      - name: Verify storage administration against MinIO
+        shell: pwsh
+        run: ./backend/tests/storage_admin_integration.ps1
+      - name: Start MinIO for the S3 storage contract
+        run: |
+          docker run --detach --name ai-image-studio-minio-contract \
+            --publish 127.0.0.1:9000:9000 \
+            --env MINIO_ROOT_USER=minioadmin \
+            --env MINIO_ROOT_PASSWORD=minioadmin123 \
+            minio/minio:RELEASE.2024-10-13T13-34-11Z server /data
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:9000/minio/health/ready >/dev/null; then
+              break
+            fi
+            if [ "$attempt" = 30 ]; then
+              docker logs ai-image-studio-minio-contract
+              exit 1
+            fi
+            sleep 1
+          done
+          docker run --rm --network container:ai-image-studio-minio-contract \
+            --entrypoint /bin/sh minio/mc:RELEASE.2024-10-08T09-37-26Z \
+            -c "mc alias set contract http://127.0.0.1:9000 minioadmin minioadmin123 && mc mb --ignore-existing contract/ai-image-studio-test"
+      - name: Verify S3-compatible storage against MinIO
+        env:
+          TEST_S3_ENDPOINT: http://127.0.0.1:9000
+          TEST_S3_BUCKET: ai-image-studio-test
+          TEST_S3_ACCESS_KEY: minioadmin
+          TEST_S3_SECRET_KEY: minioadmin123
+        run: cargo test --package ai-image-studio storage::tests::s3_storage_contract_when_configured -- --exact
+      - name: Stop MinIO contract service
+        if: always()
+        run: docker rm --force ai-image-studio-minio-contract || true
+      - run: cargo run --package ai-image-studio -- migrate
+      - name: Verify business table count
+        run: |
+          count=$(docker exec ${{ job.services.postgres.id }} psql -U ai_image_studio -d ai_image_studio -At -c "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE' AND table_name <> '_sqlx_migrations'")
+          test "$count" = "19"
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.13.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: frontend
+      - run: pnpm lint
+        working-directory: frontend
+      - run: pnpm typecheck
+        working-directory: frontend
+      - run: pnpm test
+        working-directory: frontend
+      - run: pnpm build
+        working-directory: frontend
+      - run: pnpm exec playwright install --with-deps chromium
+        working-directory: frontend
+      - run: pnpm test:e2e
+        working-directory: frontend
+
+  container:
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: ai-image-studio:test

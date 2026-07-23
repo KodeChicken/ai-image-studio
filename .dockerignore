@@ -1,0 +1,10 @@
+.git
+.idea
+.env
+data
+target
+backend/target
+frontend/node_modules
+frontend/dist
+docs/ui-prototype.html
+

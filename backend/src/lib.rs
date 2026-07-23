@@ -1,0 +1,23 @@
+pub mod admin;
+pub mod analytics;
+pub mod app;
+pub mod auth;
+pub mod config;
+pub mod consistency;
+pub mod conversations;
+pub mod error;
+pub mod history;
+pub mod images;
+pub mod models;
+pub mod prompt_templates;
+mod provider_adapters;
+pub mod providers;
+pub mod rate_limit;
+pub mod security;
+pub mod storage;
+pub mod tasks;
+pub mod updates;
+pub mod users;
+
+pub use app::{AppState, build_router};
+pub use config::Settings;

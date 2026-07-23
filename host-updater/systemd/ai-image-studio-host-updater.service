@@ -1,0 +1,26 @@
+[Unit]
+Description=AI Image Studio Host Updater
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+EnvironmentFile=/etc/ai-image-studio-updater/host-updater.env
+ExecStart=/usr/local/bin/ai-image-studio-host-updater
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+RuntimeDirectory=ai-image-studio-updater
+RuntimeDirectoryMode=0770
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/ai-image-studio-updater /opt/ai-image-studio /run/ai-image-studio-updater
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target

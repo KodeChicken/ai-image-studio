@@ -1,0 +1,35 @@
+name: 缺陷报告
+description: 报告可稳定复现的功能或界面问题
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: 问题描述
+      description: 请说明实际行为和期望行为。
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      placeholder: "1. 打开…\n2. 点击…\n3. 出现…"
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: 版本或提交
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: 环境信息
+      description: 操作系统、浏览器、部署方式和相关 Provider 类型。
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 脱敏证据
+      description: 可附日志、截图或 Trace ID；请勿提交凭据和真实用户图片。

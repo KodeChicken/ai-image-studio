@@ -1,0 +1,103 @@
+services:
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${APP_IMAGE:-ai-image-studio:local}
+    command: ["migrate"]
+    env_file:
+      - .env.example
+      - path: .env
+        required: false
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${APP_IMAGE:-ai-image-studio:local}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3100:3000"
+    env_file:
+      - .env.example
+      - path: .env
+        required: false
+    environment:
+      APP_VERSION: ${APP_VERSION:-0.1.0}
+      APP_IMAGE_REFERENCE: ${APP_IMAGE_REFERENCE:-${APP_IMAGE:-ai-image-studio:local}}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./data/images:/app/data/images
+      - ${HOST_UPDATER_SOCKET_DIR:-./data/updater}:/run/ai-image-studio-updater:ro
+    tmpfs:
+      - /tmp:size=256m
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/ai-image-studio", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${APP_IMAGE:-ai-image-studio:local}
+    command: ["worker"]
+    restart: unless-stopped
+    env_file:
+      - .env.example
+      - path: .env
+        required: false
+    environment:
+      APP_VERSION: ${APP_VERSION:-0.1.0}
+      APP_IMAGE_REFERENCE: ${APP_IMAGE_REFERENCE:-${APP_IMAGE:-ai-image-studio:local}}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./data/images:/app/data/images
+    tmpfs:
+      - /tmp:size=256m
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ai_image_studio}
+      POSTGRES_USER: ${POSTGRES_USER:-ai_image_studio}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ai_image_studio} -d ${POSTGRES_DB:-ai_image_studio}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:8-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - ./data/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10

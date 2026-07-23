@@ -1,0 +1,1133 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Image Studio · UI Prototype</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b0c10;
+      --panel: #12141a;
+      --panel-2: #171a21;
+      --panel-3: #1d2029;
+      --line: rgba(255,255,255,.08);
+      --line-strong: rgba(255,255,255,.14);
+      --text: #f5f2eb;
+      --muted: #969ba8;
+      --accent: #a78bfa;
+      --accent-2: #7c3aed;
+      --mint: #5eead4;
+      --danger: #fb7185;
+      --chrome: rgba(15,17,22,.92);
+      --input-bg: #0e1015;
+      --workspace-bg: rgba(10,11,15,.76);
+      --user-bubble: #20232c;
+      --composer-bg: #171920;
+      --soft-text: #d8d9df;
+      --radius: 16px;
+      --shadow: 0 22px 70px rgba(0,0,0,.36);
+      font-family: Inter, "SF Pro Display", "Segoe UI", "Microsoft YaHei", sans-serif;
+    }
+
+    body[data-theme="light"] {
+      color-scheme: light;
+      --bg: #f4f3f8;
+      --panel: #ffffff;
+      --panel-2: #f8f7fb;
+      --panel-3: #eceaf3;
+      --line: rgba(31,24,48,.09);
+      --line-strong: rgba(31,24,48,.16);
+      --text: #201a2b;
+      --muted: #716b7e;
+      --accent: #7c3aed;
+      --accent-2: #6d28d9;
+      --mint: #0f8f80;
+      --chrome: rgba(250,249,252,.94);
+      --input-bg: #ffffff;
+      --workspace-bg: rgba(247,246,250,.88);
+      --user-bubble: #eeeaf6;
+      --composer-bg: #ffffff;
+      --soft-text: #443d4f;
+      --shadow: 0 22px 60px rgba(48,38,68,.13);
+    }
+
+    * { box-sizing: border-box; }
+    body { margin: 0; min-width: 320px; background: var(--bg); color: var(--text); }
+    button, input, textarea, select { font: inherit; }
+    button { color: inherit; }
+    svg { width: 20px; height: 20px; }
+
+    .app {
+      display: grid;
+      grid-template-columns: 72px 286px minmax(460px, 1fr) 340px;
+      height: 100vh;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 68% 0%, rgba(124,58,237,.12), transparent 28%),
+        var(--bg);
+    }
+    .app:not([data-active-view="studio"]) { grid-template-columns: 72px minmax(460px, 1fr); }
+    .app:not([data-active-view="studio"]) .sessions,
+    .app:not([data-active-view="studio"]) .inspector { display: none; }
+
+    .rail, .sessions, .inspector { border-right: 1px solid var(--line); background: var(--chrome); }
+    .rail { display: flex; flex-direction: column; align-items: center; padding: 18px 12px; gap: 10px; }
+    .brand {
+      width: 42px; height: 42px; border-radius: 14px; display: grid; place-items: center;
+      background: linear-gradient(135deg, var(--accent), #6d28d9 64%, #312e81);
+      box-shadow: 0 10px 30px rgba(124,58,237,.34); margin-bottom: 18px; font-size: 20px;
+    }
+    .nav-btn {
+      width: 46px; height: 46px; border: 0; border-radius: 14px; display: grid; place-items: center;
+      background: transparent; color: var(--muted); cursor: pointer; position: relative;
+    }
+    .nav-btn:hover { background: var(--panel-3); color: var(--text); }
+    .nav-btn.active { color: var(--text); background: linear-gradient(135deg, rgba(167,139,250,.24), rgba(124,58,237,.12)); }
+    .nav-btn.active::before { content: ""; position: absolute; left: -12px; width: 3px; height: 22px; border-radius: 4px; background: var(--accent); }
+    .rail-spacer { flex: 1; }
+    .avatar { width: 38px; height: 38px; border-radius: 50%; background: var(--panel-3); color: var(--text); display: grid; place-items: center; font-size: 12px; border: 1px solid var(--line-strong); cursor: pointer; padding: 0; }
+    .avatar:hover, .avatar[aria-expanded="true"] { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(124,58,237,.1); }
+    .account-menu { position: fixed; z-index: 60; left: 62px; bottom: 16px; width: 238px; display: none; border: 1px solid var(--line-strong); border-radius: 15px; background: var(--panel); box-shadow: var(--shadow); padding: 8px; }
+    .account-menu.open { display: block; }
+    .account-head { padding: 10px; }
+    .account-head strong { display: block; font-size: 13px; }
+    .account-head span { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; }
+    .account-divider { height: 1px; background: var(--line); margin: 4px 0; }
+    .account-item { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 10px; border: 0; border-radius: 9px; background: transparent; color: var(--soft-text); padding: 9px 10px; cursor: pointer; text-align: left; font-size: 12px; }
+    .account-item:hover { background: var(--panel-3); color: var(--text); }
+    .account-item.danger { color: var(--danger); }
+
+    .sessions { padding: 22px 16px; overflow: hidden; }
+    .section-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+    .eyebrow { color: var(--muted); text-transform: uppercase; letter-spacing: .12em; font-size: 10px; }
+    h1, h2, h3, p { margin-top: 0; }
+    h2 { margin-bottom: 0; font-size: 19px; letter-spacing: -.02em; }
+    .icon-btn, .ghost-btn, .primary-btn {
+      border: 1px solid var(--line); border-radius: 11px; background: var(--panel-2); cursor: pointer;
+    }
+    .icon-btn { width: 34px; height: 34px; display: grid; place-items: center; }
+    .ghost-btn { padding: 9px 12px; color: var(--muted); }
+    .primary-btn { padding: 10px 15px; background: var(--accent-2); border-color: transparent; font-weight: 650; }
+    .icon-btn:hover, .ghost-btn:hover { border-color: var(--line-strong); color: var(--text); }
+
+    .search { position: relative; margin-bottom: 18px; }
+    .search input { width: 100%; padding: 11px 12px 11px 36px; border-radius: 12px; border: 1px solid var(--line); background: var(--input-bg); color: var(--text); outline: none; }
+    .search span { position: absolute; left: 12px; top: 10px; color: var(--muted); }
+    .session-list { display: flex; flex-direction: column; gap: 7px; height: calc(100vh - 136px); overflow: auto; padding-right: 2px; }
+    .session {
+      display: grid; grid-template-columns: 15px minmax(0,1fr) 27px; align-items: center; gap: 8px;
+      border: 1px solid transparent; border-radius: 13px; padding: 10px 9px; cursor: pointer; color: var(--muted);
+    }
+    .session[hidden] { display: none; }
+    .session:hover { background: var(--panel-2); }
+    .session.active { background: var(--panel-3); border-color: var(--line); color: var(--text); }
+    .session.dragging { opacity: .45; }
+    .session.drag-over { border-color: var(--accent); background: rgba(124,58,237,.08); }
+    .session-content { min-width: 0; }
+    .drag-handle { color: var(--muted); cursor: grab; user-select: none; font-size: 14px; line-height: 1; }
+    .drag-handle:active { cursor: grabbing; }
+    .session-title { font-size: 13px; font-weight: 620; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .session-meta { display: flex; justify-content: space-between; margin-top: 7px; font-size: 11px; color: var(--muted); }
+    .session .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--mint); margin-right: 5px; }
+    .rename-session { width: 27px; height: 27px; border: 0; border-radius: 8px; background: transparent; color: var(--muted); cursor: pointer; opacity: .62; }
+    .rename-session:hover, .rename-session:focus-visible { background: var(--panel); color: var(--text); opacity: 1; }
+    .session-title-input { width: 100%; border: 1px solid var(--accent); border-radius: 7px; background: var(--input-bg); color: var(--text); padding: 4px 6px; outline: 0; font-size: 12px; }
+    #prototypeSessionEmpty { padding: 20px 8px; color: var(--muted); text-align: center; font-size: 11px; }
+
+    .workspace { min-width: 0; min-height: 0; height: 100vh; overflow: hidden; display: flex; flex-direction: column; background: var(--workspace-bg); }
+    .topbar { height: 70px; flex: 0 0 70px; display: flex; align-items: center; justify-content: space-between; padding: 0 24px; border-bottom: 1px solid var(--line); backdrop-filter: blur(18px); }
+    .crumb strong { font-size: 14px; }
+    .crumb span { color: var(--muted); font-size: 12px; margin-left: 9px; }
+    .top-actions { display: flex; align-items: center; gap: 8px; }
+
+    .view { display: none; min-height: 0; flex: 1; }
+    .view.active { display: flex; }
+    .chat-view { min-height: 0; overflow: hidden; flex-direction: column; }
+    .messages { flex: 1; min-height: 0; overflow: auto; padding: 32px max(26px, 7vw) 22px; }
+    .message { max-width: 830px; margin: 0 auto 28px; }
+    .message-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; font-size: 12px; color: var(--muted); }
+    .role { width: 28px; height: 28px; border-radius: 9px; display: grid; place-items: center; background: var(--panel-3); color: var(--text); }
+    .assistant .role { background: rgba(124,58,237,.2); color: #d8ccff; }
+    .bubble { border: 1px solid var(--line); background: var(--panel-2); border-radius: 6px 18px 18px 18px; padding: 15px 17px; line-height: 1.65; font-size: 14px; }
+    .user .bubble { margin-left: auto; max-width: 680px; border-radius: 18px 6px 18px 18px; background: var(--user-bubble); }
+    .attachment { margin-top: 12px; width: 160px; border-radius: 12px; overflow: hidden; border: 1px solid var(--line); }
+    .attachment .mini-art { height: 92px; }
+    .attachment small { display: block; padding: 8px 10px; color: var(--muted); background: var(--panel-2); }
+    .assistant-copy { color: var(--soft-text); margin-bottom: 14px; font-size: 14px; line-height: 1.65; }
+    .message-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; }
+    .message-actions, .branch-switcher { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 10px; }
+    .message-actions { margin-left: auto; }
+    .message-actions button, .branch-switcher button, .branch-anchor button { border: 0; border-radius: 7px; background: transparent; color: var(--muted); padding: 5px 7px; cursor: pointer; font-size: 10px; }
+    .message-actions button:hover, .branch-switcher button:hover:not(:disabled), .branch-anchor button:hover { color: var(--accent); background: rgba(124,58,237,.1); }
+    .branch-switcher button { font-size: 15px; line-height: 1; }
+    .branch-switcher button:disabled { opacity: .35; cursor: not-allowed; }
+
+    .image-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 12px; }
+    .image-card { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; overflow: hidden; box-shadow: var(--shadow); }
+    .art { height: 248px; position: relative; overflow: hidden; background: linear-gradient(145deg,#171229,#42255c 48%,#e47171); }
+    .art::before { content: ""; position: absolute; width: 65%; height: 120%; left: 18%; top: 12%; border-radius: 50% 50% 14% 14%; background: linear-gradient(180deg, rgba(15,12,29,.2), #10121a 75%); transform: rotate(-5deg); filter: drop-shadow(0 16px 24px rgba(0,0,0,.4)); }
+    .art::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, transparent 42%, rgba(94,234,212,.16) 44%, transparent 47%), repeating-linear-gradient(90deg, transparent 0 42px, rgba(255,255,255,.035) 43px 44px); mix-blend-mode: screen; }
+    .art.alt { background: linear-gradient(160deg,#081b2b,#123b4b 38%,#9a3f64 72%,#f4a261); }
+    .art.alt::before { transform: rotate(4deg); left: 28%; background: linear-gradient(180deg, rgba(5,20,32,.15), #07131d 72%); }
+    .mini-art { background: linear-gradient(145deg,#231535,#8b3c5c 56%,#f0a16d); position: relative; }
+    .card-foot { display: flex; align-items: center; justify-content: space-between; padding: 11px 12px; }
+    .card-foot small { color: var(--muted); }
+    .card-tools { display: flex; gap: 6px; }
+    .tiny-btn { width: 28px; height: 28px; border-radius: 9px; border: 1px solid var(--line); background: transparent; color: var(--muted); cursor: pointer; }
+
+    .stream-card { border: 1px solid rgba(167,139,250,.18); background: linear-gradient(135deg,rgba(124,58,237,.09),rgba(23,26,33,.7)); border-radius: 15px; padding: 15px; }
+    .failed-card { display: flex; align-items: center; justify-content: space-between; gap: 14px; border: 1px solid rgba(251,113,133,.28); background: rgba(251,113,133,.07); border-radius: 15px; padding: 14px 15px; }
+    .failed-card > div { display: grid; gap: 4px; }
+    .failed-card strong { color: var(--danger); font-size: 12px; }
+    .failed-card span { color: var(--muted); font-size: 11px; }
+    .stream-row { display: flex; align-items: center; gap: 12px; }
+    .spinner { width: 22px; height: 22px; border: 2px solid rgba(167,139,250,.2); border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .progress { height: 4px; border-radius: 4px; background: rgba(255,255,255,.06); margin-top: 13px; overflow: hidden; }
+    .progress span { display: block; width: 68%; height: 100%; background: linear-gradient(90deg,var(--accent-2),var(--mint)); animation: breathe 1.6s ease-in-out infinite; }
+    @keyframes breathe { 50% { opacity: .6; } }
+
+    .composer-wrap { flex: 0 0 auto; padding: 12px max(26px,7vw) 22px; background: linear-gradient(180deg,transparent,var(--bg) 28%); }
+    .branch-anchor { display: flex; max-width: 830px; align-items: center; justify-content: space-between; gap: 12px; margin: 0 auto 7px; padding: 8px 11px; border: 1px solid rgba(167,139,250,.24); border-radius: 10px; color: var(--muted); background: rgba(124,58,237,.08); font-size: 10px; }
+    .branch-anchor[hidden] { display: none; }
+    .branch-anchor span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .branch-anchor strong { color: var(--accent); }
+    .composer { max-width: 830px; margin: 0 auto; border: 1px solid var(--line-strong); border-radius: 18px; background: var(--composer-bg); box-shadow: 0 18px 50px rgba(0,0,0,.18); padding: 12px; }
+    .composer textarea { width: 100%; resize: none; min-height: 58px; border: 0; outline: 0; background: transparent; color: var(--text); padding: 5px; line-height: 1.5; }
+    .composer-bottom { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+    .composer-tools { display: flex; gap: 7px; flex-wrap: wrap; }
+    .tool-chip { border: 1px solid var(--line); border-radius: 10px; background: var(--input-bg); color: var(--muted); padding: 7px 9px; font-size: 11px; }
+    .send { width: 38px; height: 38px; border: 0; border-radius: 12px; background: linear-gradient(135deg,var(--accent),var(--accent-2)); cursor: pointer; font-size: 18px; }
+
+    .inspector { border-right: 0; border-left: 1px solid var(--line); padding: 22px 18px; overflow: auto; }
+    .panel-title { display: flex; justify-content: space-between; align-items: center; margin-bottom: 22px; }
+    .panel-title h3 { font-size: 15px; margin: 0; }
+    .field { margin-bottom: 17px; }
+    .field label { display: block; margin-bottom: 8px; color: var(--muted); font-size: 11px; }
+    .field select, .field input { width: 100%; border: 1px solid var(--line); background: var(--input-bg); color: var(--text); padding: 10px 11px; border-radius: 11px; outline: none; }
+    .segmented { display: grid; grid-template-columns: repeat(3,1fr); gap: 5px; background: var(--input-bg); border-radius: 11px; padding: 4px; }
+    .segmented.two { grid-template-columns: repeat(2,1fr); }
+    .segmented.four { grid-template-columns: repeat(4,1fr); }
+    .segmented button { border: 0; border-radius: 8px; padding: 7px; background: transparent; color: var(--muted); cursor: pointer; font-size: 11px; }
+    .segmented button.active { background: var(--panel-3); color: var(--text); }
+    .segmented button:disabled { opacity: .35; cursor: not-allowed; }
+    .context-box { border: 1px solid rgba(94,234,212,.14); background: rgba(94,234,212,.04); border-radius: 13px; padding: 12px; font-size: 11px; color: var(--muted); line-height: 1.6; }
+    .context-box strong { color: var(--mint); }
+    .advanced-settings { margin: 18px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 14px 0; }
+    .advanced-settings summary { display: flex; align-items: center; justify-content: space-between; cursor: pointer; font-size: 13px; font-weight: 650; list-style: none; }
+    .advanced-settings summary::-webkit-details-marker { display: none; }
+    .advanced-settings summary span { color: var(--muted); font-size: 11px; font-weight: 400; }
+    .advanced-body { padding-top: 16px; }
+    .field-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+    .field-head label { margin: 0; }
+    .inline-control { display: grid; grid-template-columns: 1fr auto; gap: 7px; }
+    .inline-control .icon-btn { height: auto; }
+    input[type="range"] { width: 100%; accent-color: var(--accent-2); }
+    .switch { width: 38px; height: 22px; border: 0; border-radius: 999px; background: var(--panel-3); cursor: pointer; padding: 3px; }
+    .switch::after { content: ""; display: block; width: 16px; height: 16px; border-radius: 50%; background: var(--muted); transition: .18s; }
+    .switch.on { background: var(--accent-2); }
+    .switch.on::after { transform: translateX(16px); background: white; }
+    .unsupported { opacity: .5; }
+    .capability-note { border: 1px dashed var(--line-strong); border-radius: 11px; padding: 10px; color: var(--muted); font-size: 10px; line-height: 1.5; margin-bottom: 15px; }
+    .discovery-note { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 7px; color: var(--muted); font-size: 10px; line-height: 1.4; }
+    .verified-mark { color: var(--mint); }
+    .mini-action { border: 0; background: transparent; color: var(--accent); cursor: pointer; padding: 0; font-size: 10px; }
+    .style-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 7px; }
+    .style-card { border: 1px solid var(--line); border-radius: 11px; background: var(--input-bg); color: var(--muted); padding: 9px 10px; text-align: left; cursor: pointer; font-size: 11px; }
+    .style-card strong { display: block; color: var(--text); margin-bottom: 3px; font-size: 11px; }
+    .style-card.active { border-color: rgba(167,139,250,.5); background: rgba(124,58,237,.1); }
+    .prompt-tool { border: 1px solid var(--line); border-radius: 11px; padding: 10px; background: var(--input-bg); }
+    .modal-backdrop { position: fixed; z-index: 80; inset: 0; display: none; align-items: center; justify-content: center; padding: 24px; background: rgba(4,5,8,.7); backdrop-filter: blur(8px); }
+    .modal-backdrop.open { display: flex; }
+    .modal { width: min(760px,calc(100vw - 32px)); max-height: min(760px,calc(100vh - 48px)); overflow: auto; border: 1px solid var(--line-strong); border-radius: 20px; background: var(--panel); box-shadow: var(--shadow); }
+    .modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding: 20px 22px 16px; border-bottom: 1px solid var(--line); }
+    .modal-head h2 { font-size: 18px; margin-bottom: 5px; }
+    .modal-head p { margin: 0; color: var(--muted); font-size: 11px; }
+    .modal-body { display: grid; grid-template-columns: 250px minmax(0,1fr); min-height: 360px; }
+    .template-sidebar { padding: 16px; border-right: 1px solid var(--line); }
+    .template-sidebar-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+    .template-sidebar-head strong { font-size: 12px; }
+    .template-list { display: grid; gap: 6px; }
+    .template-row { width: 100%; border: 1px solid transparent; border-radius: 10px; background: transparent; color: var(--muted); padding: 10px; text-align: left; cursor: pointer; }
+    .template-row strong, .template-row small { display: block; }
+    .template-row strong { color: var(--text); font-size: 12px; margin-bottom: 4px; }
+    .template-row small { font-size: 10px; }
+    .template-row:hover { background: var(--panel-2); }
+    .template-row.active { border-color: rgba(167,139,250,.45); background: rgba(124,58,237,.09); }
+    .template-editor { padding: 20px 22px; }
+    .template-editor h3 { font-size: 14px; margin-bottom: 18px; }
+    .template-editor input, .template-editor textarea { width: 100%; border: 1px solid var(--line); background: var(--input-bg); color: var(--text); padding: 10px 11px; border-radius: 11px; outline: none; }
+    .template-editor textarea { min-height: 145px; resize: vertical; line-height: 1.6; }
+    .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+    .admin-badge { display: inline-flex; align-items: center; gap: 5px; border-radius: 999px; padding: 6px 9px; font-size: 10px; color: #f5d0fe; background: rgba(168,85,247,.16); border: 1px solid rgba(168,85,247,.24); }
+    .theme-toggle { width: auto; height: 34px; display: inline-flex; align-items: center; gap: 7px; padding: 8px 10px; white-space: nowrap; }
+
+    .page { width: 100%; overflow: auto; padding: 30px; display: block; }
+    .page-header { display: flex; justify-content: space-between; align-items: end; margin-bottom: 24px; }
+    .page-header h1 { margin-bottom: 6px; font-size: 26px; }
+    .page-header p { color: var(--muted); margin: 0; font-size: 13px; }
+    .cards { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 14px; }
+    .history-filter-grid { display: grid; grid-template-columns: repeat(3,minmax(150px,1fr)); align-items: end; gap: 10px; margin-bottom: 16px; padding: 14px; }
+    .history-filter-grid .field { margin: 0; }
+    .history-filter-actions { display: flex; justify-content: flex-end; gap: 8px; }
+    .prototype-empty { display: none; padding: 28px; color: var(--muted); text-align: center; }
+    .surface { border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); padding: 17px; }
+    .surface h3 { margin-bottom: 6px; font-size: 14px; }
+    .surface p, .surface small { color: var(--muted); }
+    .history-art { height: 170px; border-radius: 12px; margin-bottom: 12px; }
+    .status { font-size: 11px; border-radius: 999px; padding: 5px 8px; background: rgba(94,234,212,.08); color: var(--mint); }
+    .task-list { display: grid; gap: 8px; }
+    .task-row { display: grid; grid-template-columns: 1.2fr .8fr .8fr .7fr; align-items: center; gap: 12px; border: 1px solid var(--line); border-radius: 13px; padding: 14px; background: var(--panel); font-size: 12px; }
+    .provider-logo { width: 38px; height: 38px; border-radius: 12px; display: grid; place-items: center; background: linear-gradient(135deg,#303340,#171920); border: 1px solid var(--line); margin-bottom: 16px; }
+    .storage-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+    .driver-tabs { display: flex; gap: 8px; margin: 18px 0; }
+    .driver-tab { flex: 1; border: 1px solid var(--line); border-radius: 13px; background: transparent; padding: 14px; text-align: left; cursor: pointer; color: var(--muted); }
+    .driver-tab.active { border-color: rgba(167,139,250,.5); background: rgba(124,58,237,.09); color: var(--text); }
+    .settings-form { display: none; }
+    .settings-form.active { display: block; }
+    .notice { border-left: 3px solid var(--accent); padding: 10px 12px; background: rgba(124,58,237,.07); color: var(--muted); font-size: 12px; margin-top: 16px; }
+    .metrics { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 12px; margin-bottom: 18px; }
+    .metric strong { display: block; font-size: 24px; margin-top: 8px; }
+    .table-wrap { overflow: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); }
+    table { width: 100%; border-collapse: collapse; min-width: 760px; font-size: 12px; }
+    th, td { padding: 14px 16px; border-bottom: 1px solid var(--line); text-align: left; }
+    th { color: var(--muted); font-weight: 550; background: var(--panel-2); }
+    tbody tr:last-child td { border-bottom: 0; }
+    .user-cell { display: flex; align-items: center; gap: 10px; }
+    .user-mini-avatar { width: 32px; height: 32px; border-radius: 10px; display: grid; place-items: center; background: var(--panel-3); font-weight: 700; }
+    .role-badge { padding: 4px 7px; border-radius: 7px; background: rgba(124,58,237,.1); color: var(--accent); }
+    .storage-split { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; }
+    .storage-count { border: 1px solid var(--line); border-radius: 11px; padding: 10px; }
+    .storage-count strong { display: block; margin-top: 4px; font-size: 18px; }
+    .toast { position: fixed; right: 24px; bottom: 24px; background: var(--panel-3); border: 1px solid var(--line-strong); border-radius: 12px; padding: 12px 16px; opacity: 0; transform: translateY(12px); pointer-events: none; transition: .2s; box-shadow: var(--shadow); font-size: 13px; }
+    .toast.show { opacity: 1; transform: translateY(0); }
+    body[data-theme="light"] .stream-card { background: linear-gradient(135deg,rgba(124,58,237,.08),rgba(255,255,255,.88)); }
+    body[data-theme="light"] .assistant .role { color: #6d28d9; }
+    body[data-theme="light"] .provider-logo { background: linear-gradient(135deg,#f1eef8,#ffffff); }
+    body[data-theme="light"] .admin-badge { color: #6d28d9; background: rgba(124,58,237,.09); border-color: rgba(124,58,237,.18); }
+    body[data-theme="light"] .modal-backdrop { background: rgba(31,24,48,.28); }
+
+    @media (max-width: 1220px) {
+      .app { grid-template-columns: 68px 260px minmax(440px,1fr); }
+      .app:not([data-active-view="studio"]) { grid-template-columns: 68px minmax(440px,1fr); }
+      .inspector { display: none; }
+    }
+    @media (max-width: 860px) {
+      .app { grid-template-columns: 60px minmax(0,1fr); }
+      .app:not([data-active-view="studio"]) { grid-template-columns: 60px minmax(0,1fr); }
+      .sessions { display: none; }
+      .rail { padding-inline: 7px; }
+      .nav-btn { width: 42px; }
+      .messages, .composer-wrap { padding-left: 16px; padding-right: 16px; }
+      .cards, .storage-grid, .metrics, .history-filter-grid { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 560px) {
+      .app { grid-template-columns: 1fr; }
+      .app:not([data-active-view="studio"]) { grid-template-columns: 1fr; }
+      .rail { display: flex; position: fixed; z-index: 20; left: 0; right: 0; bottom: 0; width: 100%; height: 58px; flex-direction: row; justify-content: space-around; padding: 6px 14px; border-top: 1px solid var(--line); border-right: 0; }
+      .rail .brand, .rail .rail-spacer, .rail .avatar, .rail .nav-btn[title="帮助"] { display: none; }
+      .nav-btn.active::before { left: 50%; top: -6px; width: 22px; height: 3px; transform: translateX(-50%); }
+      .workspace { padding-bottom: 58px; }
+      .topbar { padding: 0 14px; }
+      .image-grid { grid-template-columns: 1fr; }
+      .art { height: 220px; }
+      .page { padding: 20px 14px; }
+      .task-row { grid-template-columns: 1fr 1fr; }
+      .modal-body { grid-template-columns: 1fr; }
+      .template-sidebar { border-right: 0; border-bottom: 1px solid var(--line); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app" data-active-view="studio">
+    <nav class="rail" aria-label="主导航">
+      <div class="brand">✦</div>
+      <button class="nav-btn active" data-view="studio" title="创作台">◈</button>
+      <button class="nav-btn" data-view="history" title="历史作品">▦</button>
+      <button class="nav-btn" data-view="usage" title="用量与成本">◫</button>
+      <button class="nav-btn" data-view="providers" title="Provider">⌁</button>
+      <button class="nav-btn" data-view="users" data-admin-only title="用户管理">♙</button>
+      <button class="nav-btn" data-view="operations" data-admin-only title="运营监控">◉</button>
+      <button class="nav-btn" data-view="settings" data-admin-only title="系统设置">⚙</button>
+      <button class="nav-btn" data-view="updates" data-admin-only title="版本与升级">↥</button>
+      <div class="rail-spacer"></div>
+      <button class="nav-btn" title="帮助">?</button>
+      <button class="avatar" id="accountAvatar" type="button" title="管理员 admin" aria-label="打开账户菜单" aria-haspopup="menu" aria-expanded="false" aria-controls="accountMenu">AD</button>
+    </nav>
+
+    <aside class="sessions">
+      <div class="section-head">
+        <div><div class="eyebrow">Workspace</div><h2>创作会话</h2></div>
+        <button class="icon-btn" id="newConversation" aria-label="新建会话">＋</button>
+      </div>
+      <div class="search"><span>⌕</span><input id="prototypeSessionSearch" aria-label="搜索会话" placeholder="搜索会话标题"></div>
+      <div class="session-list">
+        <div class="session active" draggable="true"><span class="drag-handle" title="拖动排序">⠿</span><div class="session-content"><div class="session-title">雨夜霓虹人物海报</div><div class="session-meta"><span><i class="dot"></i>生成中</span><span>刚刚</span></div></div><button class="rename-session" type="button" aria-label="修改会话标题" title="修改标题">✎</button></div>
+        <div class="session" draggable="true"><span class="drag-handle" title="拖动排序">⠿</span><div class="session-content"><div class="session-title">极简香水产品摄影</div><div class="session-meta"><span>6 轮</span><span>12 分钟</span></div></div><button class="rename-session" type="button" aria-label="修改会话标题" title="修改标题">✎</button></div>
+        <div class="session" draggable="true"><span class="drag-handle" title="拖动排序">⠿</span><div class="session-content"><div class="session-title">东方奇幻山水概念图</div><div class="session-meta"><span>4 轮</span><span>昨天</span></div></div><button class="rename-session" type="button" aria-label="修改会话标题" title="修改标题">✎</button></div>
+        <div class="session" draggable="true"><span class="drag-handle" title="拖动排序">⠿</span><div class="session-content"><div class="session-title">APP 吉祥物表情包</div><div class="session-meta"><span>11 轮</span><span>周一</span></div></div><button class="rename-session" type="button" aria-label="修改会话标题" title="修改标题">✎</button></div>
+        <div class="session" draggable="true"><span class="drag-handle" title="拖动排序">⠿</span><div class="session-content"><div class="session-title">复古旅行杂志封面</div><div class="session-meta"><span>3 轮</span><span>7 月 18 日</span></div></div><button class="rename-session" type="button" aria-label="修改会话标题" title="修改标题">✎</button></div>
+        <div class="empty-compact" id="prototypeSessionEmpty" hidden>没有匹配的会话标题。</div>
+      </div>
+    </aside>
+
+    <main class="workspace">
+      <header class="topbar">
+        <div class="crumb"><strong id="viewTitle">雨夜霓虹人物海报</strong><span id="viewSubtitle">多轮会话 · 第 3 轮</span></div>
+        <div class="top-actions"><span class="admin-badge">管理员 · admin</span><button class="icon-btn theme-toggle" id="themeToggle" aria-label="切换主题" aria-pressed="false"><span id="themeIcon">☀</span><span id="themeLabel">Light</span></button><button class="icon-btn">•••</button></div>
+      </header>
+
+      <section class="view chat-view active" data-page="studio">
+        <div class="messages">
+          <article class="message user">
+            <div class="message-head" style="justify-content:flex-end"><span>你 · 10:24</span><span class="role">你</span></div>
+            <div class="bubble">设计一张电影感人物海报，女性侧脸，暖色夕阳，保留大量留白，画幅 16:9。</div>
+          </article>
+
+          <article class="message assistant">
+            <div class="message-head"><span class="role">✦</span><span>AI Image Studio · GPT Image</span></div>
+            <div class="assistant-copy">我先建立温暖、克制的电影画面，生成了两版不同光比的构图。你可以直接说“用第一张”或“用第二张”继续调整。</div>
+            <div class="image-grid">
+              <div class="image-card"><div class="art"></div><div class="card-foot"><small>1536 × 1024 · PNG</small><div class="card-tools"><button class="tiny-btn">↗</button><button class="tiny-btn">↓</button></div></div></div>
+              <div class="image-card"><div class="art alt"></div><div class="card-foot"><small>1536 × 1024 · PNG</small><div class="card-tools"><button class="tiny-btn">↗</button><button class="tiny-btn">↓</button></div></div></div>
+            </div>
+            <div class="message-footer"><div></div><div class="message-actions"><button type="button" id="continueFromMessage">从这里继续</button><button type="button" id="regenerateMessage">重新生成</button></div></div>
+          </article>
+
+          <article class="message user">
+            <div class="message-head" style="justify-content:flex-end"><span>你 · 10:27</span><span class="role">你</span></div>
+            <div class="bubble"><span id="prototypeBranchMessage">用第二张继续。保持人物和镜头不变，把场景改成雨夜霓虹街道，增加青紫色反光。</span><div class="attachment"><div class="mini-art"></div><small>自动关联 · 上一轮图片 02</small></div></div>
+            <div class="message-footer"><div class="branch-switcher" aria-label="消息分支切换"><button type="button" id="previousPrototypeBranch" aria-label="上一个分支">‹</button><span id="prototypeBranchLabel">分支 2 / 2</span><button type="button" id="nextPrototypeBranch" aria-label="下一个分支" disabled>›</button></div></div>
+          </article>
+
+          <article class="message assistant">
+            <div class="message-head"><span class="role">✦</span><span>AI Image Studio · 正在生成</span></div>
+            <div class="stream-card"><div class="stream-row"><div class="spinner" id="prototypeTaskSpinner"></div><div><strong id="prototypeTaskStatus">正在持久化第 1 张图片</strong><div id="prototypeTaskDetail" style="color:var(--muted);font-size:11px;margin-top:4px">storage.persisting · Local</div></div></div><div class="progress" id="prototypeTaskProgress"><span></span></div><div class="message-footer"><div></div><button class="ghost-btn" id="cancelPrototypeTask" type="button">取消生成</button></div></div>
+          </article>
+
+          <article class="message assistant">
+            <div class="message-head"><span class="role">✦</span><span>AI Image Studio · 失败任务示例</span></div>
+            <div class="failed-card"><div><strong id="prototypeRetryStatus">生成失败</strong><span id="prototypeRetryDetail">上游服务暂时不可用 · 可重试原任务</span></div><button class="ghost-btn" id="retryPrototypeTask" type="button">重试</button></div>
+          </article>
+        </div>
+
+        <div class="composer-wrap">
+          <div class="branch-anchor" id="prototypeBranchAnchor" hidden><span><strong>从这里继续</strong> · 我先建立温暖、克制的电影画面…</span><button type="button" id="cancelPrototypeBranch">取消</button></div>
+          <div class="composer">
+            <textarea id="prompt" placeholder="继续描述你想要的变化，例如：保持人物不变，把背景改成清晨海边……"></textarea>
+            <div class="composer-bottom"><div class="composer-tools"><button class="tool-chip">＋ 参考图</button></div><button class="send" id="sendPrompt" aria-label="发送">↑</button></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="view" data-page="history"><div class="page"><div class="page-header"><div><h1>历史作品</h1><p>按会话、Provider、模型、日期和图片尺寸筛选已持久化图片。</p></div></div><div class="surface history-filter-grid"><div class="field"><label>会话</label><select id="prototypeHistoryConversation"><option value="">全部会话</option><option value="poster">雨夜霓虹人物海报</option><option value="product">极简香水产品摄影</option><option value="landscape">东方奇幻山水概念图</option></select></div><div class="field"><label>Provider</label><select id="prototypeHistoryProvider"><option value="">全部 Provider</option><option value="openai">OpenAI Compatible</option><option value="gemini">Google Gemini</option><option value="grok">xAI Grok</option></select></div><div class="field"><label>模型</label><select id="prototypeHistoryModel"><option value="">全部模型</option><option value="gpt-image">GPT Image</option><option value="gemini-image">Gemini Image</option><option value="grok-image">Grok Image</option></select></div><div class="field"><label>开始日期</label><input id="prototypeHistoryFrom" type="date" value="2026-07-20"></div><div class="field"><label>结束日期</label><input id="prototypeHistoryTo" type="date" value="2026-07-21"></div><div class="field"><label>图片尺寸</label><select id="prototypeHistorySize"><option value="">全部尺寸</option><option value="1536x1024">1536 × 1024</option><option value="1024x1024">1024 × 1024</option></select></div><div class="history-filter-actions"><button class="ghost-btn" id="resetPrototypeHistory" type="button">重置</button><button class="primary-btn" id="applyPrototypeHistory" type="button">应用筛选</button></div></div><div class="cards" id="prototypeHistoryCards"><div class="surface" data-history-card data-conversation="poster" data-provider="openai" data-model="gpt-image" data-date="2026-07-21" data-size="1536x1024"><div class="history-art art alt"></div><h3>雨夜霓虹人物海报</h3><small>2 张 · GPT Image · 1536 × 1024 · 今天</small></div><div class="surface" data-history-card data-conversation="product" data-provider="gemini" data-model="gemini-image" data-date="2026-07-21" data-size="1024x1024"><div class="history-art mini-art"></div><h3>极简香水产品摄影</h3><small>4 张 · Gemini · 1024 × 1024 · 今天</small></div><div class="surface" data-history-card data-conversation="landscape" data-provider="grok" data-model="grok-image" data-date="2026-07-20" data-size="1536x1024"><div class="history-art art"></div><h3>东方奇幻山水概念图</h3><small>3 张 · Grok · 1536 × 1024 · 昨天</small></div></div><div class="surface prototype-empty" id="prototypeHistoryEmpty">没有符合当前筛选条件的历史作品。</div></div></section>
+
+      <section class="view" data-page="usage"><div class="page"><div class="page-header"><div><h1>用量与成本</h1><p>最近 30 天个人实际用量；未配置模型价格时不伪造成本。</p></div><button class="ghost-btn">刷新</button></div><div class="metrics"><div class="surface metric"><small>完成任务</small><strong>128</strong></div><div class="surface metric"><small>生成图片</small><strong>196</strong></div><div class="surface metric"><small>USD 成本</small><strong>$12.84</strong></div><div class="surface metric"><small>CNY 成本</small><strong>¥8.20</strong></div></div><div class="table-wrap"><table><thead><tr><th>Provider / 模型</th><th>任务</th><th>图片</th><th>成本</th></tr></thead><tbody><tr><td><strong>GPT Image 1</strong><br><small>OpenAI Compatible</small></td><td>72</td><td>104</td><td>USD 8.3200</td></tr><tr><td><strong>Gemini Flash Image</strong><br><small>Google Gemini</small></td><td>36</td><td>52</td><td>未配置</td></tr><tr><td><strong>Grok Imagine Image</strong><br><small>xAI Grok</small></td><td>20</td><td>40</td><td>CNY 8.2000</td></tr></tbody></table></div><div class="notice">不同币种分别汇总；成本是平台按模型价格计算的参考值，不等同于上游最终账单。</div></div></section>
+
+      <section class="view" data-page="providers"><div class="page"><div class="page-header"><div><h1>我的 Provider</h1><p>当前登录用户 admin 的独立配置；其他用户拥有自己的 Provider 和模型。</p></div><button class="primary-btn" id="addPrototypeProvider">添加 Provider</button></div><div class="cards"><div class="surface" data-provider-card><div class="provider-logo">OA</div><h3>OpenAI Compatible</h3><p>5 个已验证 · 1 个待分类 · 刚刚刷新</p><span class="status" data-provider-health>连接正常</span><div style="display:flex;gap:8px;margin-top:14px"><button class="ghost-btn" data-provider-action="test">测试连接</button><button class="ghost-btn" data-provider-action="models">模型与价格</button></div></div><div class="surface" data-provider-card><div class="provider-logo">G</div><h3>Google Gemini</h3><p>2 个已验证 · 1 个待分类 · admin 专属</p><span class="status" data-provider-health>尚未测试</span><div style="display:flex;gap:8px;margin-top:14px"><button class="ghost-btn" data-provider-action="test">测试连接</button><button class="ghost-btn" data-provider-action="models">模型与价格</button></div></div><div class="surface" data-provider-card><div class="provider-logo">X</div><h3>xAI Grok</h3><p>2 个已验证 · Parameter Schema 已同步</p><span class="status" data-provider-health>尚未测试</span><div style="display:flex;gap:8px;margin-top:14px"><button class="ghost-btn" data-provider-action="test">测试连接</button><button class="ghost-btn" data-provider-action="models">模型与价格</button></div></div></div><div class="notice">“测试连接”由后端读取真实模型列表；“验证”会执行一次可能产生费用的最小生图。模型价格只用于平台成本估算，不等同于上游账单。</div></div></section>
+
+      <section class="view" data-page="users"><div class="page"><div class="page-header"><div><div class="admin-badge" style="margin-bottom:10px">管理员专属</div><h1>用户管理</h1><p>查看用户状态和资源摘要，不展示 Provider API Key 或任何 Secret。</p></div><button class="primary-btn" id="createUser">＋ 创建用户</button></div><div class="metrics"><div class="surface metric"><small>全部用户</small><strong>24</strong></div><div class="surface metric"><small>今日活跃</small><strong>11</strong></div><div class="surface metric"><small>Provider 配置</small><strong>39</strong></div><div class="surface metric"><small>图片存储</small><strong>18.6 GB</strong></div></div><div class="table-wrap"><table><thead><tr><th>用户</th><th>角色</th><th>状态</th><th>Provider</th><th>图片占用</th><th>最后登录</th><th>操作</th></tr></thead><tbody><tr><td><div class="user-cell"><span class="user-mini-avatar">AD</span><div><strong>admin</strong><br><small>系统管理员</small></div></div></td><td><span class="role-badge">Admin</span></td><td><span class="status">正常</span></td><td>3</td><td>4.8 GB</td><td>刚刚</td><td><button class="ghost-btn">详情</button></td></tr><tr><td><div class="user-cell"><span class="user-mini-avatar">D1</span><div><strong>designer_01</strong><br><small>视觉设计</small></div></div></td><td>User</td><td><span class="status">正常</span></td><td>2</td><td>8.1 GB</td><td>12 分钟前</td><td><button class="ghost-btn">管理</button></td></tr><tr><td><div class="user-cell"><span class="user-mini-avatar">DU</span><div><strong>demo_user</strong><br><small>演示账户</small></div></div></td><td>User</td><td>已禁用</td><td>1</td><td>620 MB</td><td>7 月 18 日</td><td><button class="ghost-btn">管理</button></td></tr></tbody></table></div><div class="notice">默认管理员来自配置：admin / 123456。首次登录必须修改密码，原型不展示明文密码管理能力。</div></div></section>
+
+      <section class="view" data-page="operations"><div class="page"><div class="page-header"><div><div class="admin-badge" style="margin-bottom:10px">管理员专属</div><h1>运营监控</h1><p>任务、Provider、存储和脱敏请求日志，不设置重复的任务一级入口。</p></div><button class="ghost-btn">刷新</button></div><div class="metrics"><div class="surface metric"><small>任务总数</small><strong>482</strong></div><div class="surface metric"><small>成功率</small><strong>96.7%</strong></div><div class="surface metric"><small>P95 耗时</small><strong>38s</strong></div><div class="surface metric"><small>自动重试</small><strong>14</strong></div></div><div class="table-wrap"><table><thead><tr><th>时间</th><th>Provider / 模型</th><th>状态</th><th>耗时</th><th>Trace ID</th></tr></thead><tbody><tr><td>10:31:22</td><td>OpenAI Compatible / gpt-image-1</td><td><span class="status">200</span></td><td>18.2s</td><td><code>2ac72f3d…</code></td></tr><tr><td>10:29:04</td><td>Google Gemini / gemini-2.5-flash-image</td><td>502 → 已重试</td><td>31.8s</td><td><code>7b119a8e…</code></td></tr></tbody></table></div><div class="notice">请求日志不包含 API Key、Prompt 或图片 Base64；Trace ID 可用于定位后端结构化日志。</div></div></section>
+
+      <section class="view" data-page="settings"><div class="page"><div class="page-header"><div><div class="admin-badge" style="margin-bottom:10px">管理员专属</div><h1>存储与系统设置</h1><p>选择新图片写入 Local 或 S3；每条 Asset 仍按自己的 storage_driver 读取。</p></div><span class="status">当前主驱动：Local</span></div><div class="storage-grid"><div class="surface"><h3>主存储驱动</h3><p>修改配置后需要重启服务并通过读写测试。</p><div class="driver-tabs"><button class="driver-tab active" data-driver="local"><strong>Local</strong><br><small>宿主机持久卷</small></button><button class="driver-tab" data-driver="s3"><strong>S3 Compatible</strong><br><small>AWS S3 / MinIO / 兼容服务</small></button></div><div class="settings-form active" data-driver-form="local"><div class="field"><label>本地持久化根目录（不逐条写入数据库）</label><input value="/app/data/images"></div><div class="field"><label>容器挂载</label><input value="./data/images:/app/data/images"></div></div><div class="settings-form" data-driver-form="s3"><div class="field"><label>Endpoint</label><input placeholder="https://s3.example.com"></div><div class="field"><label>Bucket / Region</label><input placeholder="ai-image-studio / auto"></div><div class="field"><label>Object Prefix</label><input value="ai-image-studio/"></div><div class="field"><label>Access Key ID</label><input placeholder="由环境变量或 Secret Manager 注入"></div></div><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="primary-btn" id="saveStorage">保存配置</button><button class="ghost-btn" id="testStorage">测试连接</button><button class="ghost-btn" id="scanPrototypeConsistency">立即一致性扫描</button><button class="ghost-btn" id="cleanupPrototypeOrphans">清理孤儿文件</button></div><div class="notice">数据库保存 storage_driver、storage_container 和 storage_key，不保存本地绝对路径或 S3 签名 URL。</div></div><div class="surface"><h3>混合存储与健康状态</h3><div class="storage-split"><div class="storage-count"><small>Local Asset</small><strong>1,284</strong><small>4.8 GB</small></div><div class="storage-count"><small>S3 Asset</small><strong>3,912</strong><small>13.8 GB</small></div></div><div class="task-list" style="margin-top:16px"><div class="task-row" style="grid-template-columns:1fr auto"><span>Local 读写</span><span class="status">正常</span></div><div class="task-row" style="grid-template-columns:1fr auto"><span>S3 读写</span><span class="status">正常</span></div><div class="task-row" style="grid-template-columns:1fr auto"><span>数据库 / 文件一致性</span><span class="status" id="prototypeConsistencyStatus">最近扫描正常</span></div><div class="task-row" style="grid-template-columns:1fr auto"><span>待迁移 Asset</span><span>126</span></div></div></div></div></div></section>
+
+      <section class="view" data-page="updates"><div class="page"><div class="page-header"><div><div class="admin-badge" style="margin-bottom:10px">管理员专属</div><h1>版本与升级</h1><p>Web 应用只做检查、审计和委托；Host Updater 执行备份、迁移与切换。</p></div><span class="status">Host Updater 已配置</span></div><div class="metrics"><div class="surface metric"><small>当前版本</small><strong>0.4.2</strong></div><div class="surface metric"><small>当前 Schema</small><strong>12</strong></div><div class="surface metric"><small>最新版本</small><strong>0.4.3</strong></div><div class="surface metric"><small>更新通道</small><strong>stable</strong></div></div><div class="storage-grid"><div class="surface"><h3>Release Manifest</h3><p>目标 Schema 13 · 需要备份 · 无破坏性 Migration</p><div class="notice">Host Updater 会再次验证签名、镜像 Digest、磁盘、数据库、图片备份与健康检查。</div><div style="display:flex;gap:8px"><button class="ghost-btn" id="checkPrototypeUpdate">检查更新</button><button class="primary-btn" id="startPrototypeUpdate">升级到 0.4.3</button></div></div><div class="surface"><h3>可回滚版本</h3><div class="task-list"><div class="task-row"><span>0.4.2</span><span>Schema 12</span><button class="ghost-btn">回滚</button></div><div class="task-row"><span>0.4.1</span><span>Schema 11</span><button class="ghost-btn">回滚</button></div><div class="task-row"><span>0.4.0</span><span>Schema 10</span><button class="ghost-btn">回滚</button></div></div></div></div><div class="notice">敏感操作要求管理员再次输入当前密码；Web 容器不挂载 Docker Socket，也不展示 GHCR、数据库或 Updater Token。</div></div></section>
+    </main>
+
+    <aside class="inspector">
+      <div class="panel-title"><h3>生成参数</h3><button class="icon-btn">↺</button></div>
+      <div class="field"><label>Provider</label><select id="providerSelect"><option value="openai">OpenAI Compatible</option><option value="gemini">Google Gemini</option><option value="grok">xAI Grok</option></select></div>
+      <div class="field">
+        <div class="field-head"><label>模型</label><button class="mini-action" id="refreshModels" type="button">↻ 刷新模型列表</button></div>
+        <select id="imageModel">
+          <optgroup label="已验证可生图">
+            <option value="gpt-image-2">✓ GPT Image 2</option>
+            <option value="gpt-image-1.5" selected>✓ GPT Image 1.5</option>
+            <option value="gpt-image-1">✓ GPT Image 1</option>
+            <option value="gpt-image-1-mini">✓ GPT Image 1 Mini</option>
+            <option value="dall-e-3">✓ DALL·E 3 · Legacy</option>
+          </optgroup>
+          <optgroup label="待分类 · 默认不用于生图">
+            <option value="custom-image-preview">? custom-image-preview</option>
+          </optgroup>
+        </select>
+        <div class="discovery-note"><span id="discoverSummary"><span class="verified-mark">5 个已验证</span> · 1 个待分类</span><span>刚刚同步</span></div>
+      </div>
+      <div class="field"><label>宽高比</label><div class="segmented four"><button class="active">Auto</button><button>1:1</button><button>16:9</button><button>9:16</button></div></div>
+      <div class="field"><label>分辨率</label><div class="segmented four"><button class="active">Auto</button><button>1K</button><button>2K</button><button>4K</button></div></div>
+      <div class="field"><label>质量等级</label><div class="segmented four"><button>Auto</button><button>Low</button><button class="active">Medium</button><button>High</button></div></div>
+      <div class="field"><label>生成数量</label><input type="number" value="2" min="1" max="4"></div>
+
+      <div class="field">
+        <label>创作风格 · Prompt 模板</label>
+        <div class="style-grid" id="styleGrid">
+          <button class="style-card active" type="button" data-template-name="电影感"><strong>电影感</strong><span>光影与镜头语言</span></button>
+          <button class="style-card" type="button" data-template-name="摄影写实"><strong>摄影写实</strong><span>真实材质与景深</span></button>
+          <button class="style-card" type="button" data-template-name="数字插画"><strong>数字插画</strong><span>清晰轮廓与配色</span></button>
+          <button class="style-card" type="button" data-template-name="不指定"><strong>不指定</strong><span>仅使用本轮 Prompt</span></button>
+        </div>
+        <div class="discovery-note"><span>选择后追加模板文本，不作为 API 参数</span><button class="mini-action" id="manageStyleTemplates" type="button">管理模板</button></div>
+      </div>
+      <div class="field prompt-tool"><div class="field-head"><label>Prompt 自动增强 · 平台能力</label><button class="switch on" type="button" role="switch" aria-checked="true" aria-label="Prompt 自动增强"></button></div><div class="discovery-note" style="margin-top:0"><span>由 Prompt Builder 执行，不冒充 Provider 参数</span></div></div>
+
+      <details class="advanced-settings" open>
+        <summary>模型高级参数 <span id="schemaSource">OpenAI 官方文档 + Parameter Schema</span></summary>
+        <div class="advanced-body">
+          <div class="field" data-param="output-format"><label>输出格式</label><div class="segmented"><button class="active">PNG</button><button>WebP</button><button>JPEG</button></div></div>
+          <div class="field" data-param="output-compression"><div class="field-head"><label>输出压缩 · JPEG/WebP</label><span>90%</span></div><input type="range" min="0" max="100" step="1" value="90"></div>
+          <div class="field" data-param="background"><label>背景</label><div class="segmented"><button class="active">Auto</button><button>Opaque</button><button data-transparent>Transparent</button></div></div>
+          <div class="field" data-param="moderation"><label>内容审核级别</label><div class="segmented two"><button class="active">Auto</button><button>Low</button></div></div>
+          <div class="field" data-param="partial-images"><label>流式局部预览</label><div class="segmented four"><button class="active">0</button><button>1</button><button>2</button><button>3</button></div></div>
+          <div class="field" data-param="native-style" hidden><label>原生 Style · 仅 DALL·E 3</label><div class="segmented two"><button class="active">Vivid</button><button>Natural</button></div></div>
+          <div class="capability-note" id="capabilityNote">当前参数来自 OpenAI 官方 Images API Schema。标准模型列表接口只负责发现候选模型；Seed、Steps、CFG 等未声明参数不会显示或发送。</div>
+        </div>
+      </details>
+      <div class="context-box"><strong>多轮上下文自动关联</strong><br>当前会话分支 · 相关文本与必要图片<br>图片作为独立多模态输入，不拼入 Prompt 文本，也不发送全部历史。</div>
+    </aside>
+  </div>
+
+  <div class="account-menu" id="accountMenu" role="menu" aria-hidden="true">
+    <div class="account-head"><strong>admin</strong><span>系统管理员 · 首次登录已完成</span></div>
+    <div class="account-divider"></div>
+    <button class="account-item" type="button" role="menuitem" data-account-action="profile"><span>个人设置</span><span>›</span></button>
+    <button class="account-item" type="button" role="menuitem" data-account-action="users"><span>用户管理</span><span>Admin</span></button>
+    <button class="account-item" type="button" role="menuitem" data-account-action="theme"><span>切换 Light / Dark</span><span>◐</span></button>
+    <button class="account-item" type="button" role="menuitem" data-account-action="password"><span>修改密码</span><span>›</span></button>
+    <div class="account-divider"></div>
+    <button class="account-item danger" type="button" role="menuitem" data-account-action="logout"><span>退出登录</span><span>↗</span></button>
+  </div>
+
+  <div class="modal-backdrop" id="accountSettingsModal" role="dialog" aria-modal="true" aria-labelledby="accountSettingsTitle" aria-hidden="true">
+    <div class="modal" style="width:min(500px,calc(100vw - 32px))">
+      <div class="modal-head"><div><h2 id="accountSettingsTitle">个人设置</h2><p>账号信息只读；主题偏好会保存到当前用户。</p></div><button class="icon-btn" id="closeAccountSettings" type="button" aria-label="关闭个人设置">×</button></div>
+      <div style="padding:20px 22px">
+        <div class="field"><label>用户名</label><input value="admin" disabled></div>
+        <div class="field"><label>显示名称</label><input value="系统管理员" disabled></div>
+        <div class="field"><label>角色</label><input value="管理员" disabled></div>
+        <div class="field"><label>主题偏好</label><select id="prototypeThemePreference"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark" selected>深色</option></select></div>
+        <div style="display:flex;justify-content:flex-end;gap:8px"><button class="ghost-btn" id="cancelAccountSettings" type="button">取消</button><button class="primary-btn" id="saveAccountSettings" type="button">保存个人设置</button></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="styleTemplateModal" role="dialog" aria-modal="true" aria-labelledby="styleTemplateTitle" aria-hidden="true">
+    <div class="modal">
+      <div class="modal-head">
+        <div><h2 id="styleTemplateTitle">创作风格模板</h2><p>模板内容由 Prompt Builder 追加到本轮 Prompt，不作为 Provider 参数。</p></div>
+        <button class="icon-btn" id="closeStyleTemplateModal" type="button" aria-label="关闭模板管理">×</button>
+      </div>
+      <div class="modal-body">
+        <aside class="template-sidebar">
+          <div class="template-sidebar-head"><strong>我的模板</strong><button class="mini-action" id="newStyleTemplate" type="button">＋ 新建</button></div>
+          <div class="template-list" id="styleTemplateList">
+            <button class="template-row active" type="button" data-template-name="电影感" data-template-prompt="电影感构图，克制的色彩层次，明确的主光与轮廓光，使用具有叙事感的镜头语言。"><strong>电影感</strong><small>系统模板 · 已启用</small></button>
+            <button class="template-row" type="button" data-template-name="摄影写实" data-template-prompt="写实摄影风格，真实材质和自然肤质，合理景深，避免过度锐化与塑料质感。"><strong>摄影写实</strong><small>系统模板 · 已启用</small></button>
+            <button class="template-row" type="button" data-template-name="数字插画" data-template-prompt="数字插画风格，轮廓清晰，配色统一，细节层次丰富，保持主体辨识度。"><strong>数字插画</strong><small>系统模板 · 已启用</small></button>
+          </div>
+        </aside>
+        <section class="template-editor">
+          <h3>模板内容</h3>
+          <div class="field"><label for="styleTemplateName">模板名称</label><input id="styleTemplateName" value="电影感" maxlength="40"></div>
+          <div class="field"><label for="styleTemplatePrompt">追加到 Prompt 的风格说明</label><textarea id="styleTemplatePrompt">电影感构图，克制的色彩层次，明确的主光与轮廓光，使用具有叙事感的镜头语言。</textarea></div>
+          <div class="capability-note">保存后仅更新当前用户的 Prompt 模板。实际实现对应 prompt_templates.template_type=style。</div>
+          <div class="modal-actions"><button class="ghost-btn" id="cancelStyleTemplate" type="button">取消</button><button class="primary-btn" id="saveStyleTemplate" type="button">保存模板</button></div>
+        </section>
+      </div>
+    </div>
+  </div>
+  <div class="modal-backdrop" id="providerModelsModal" role="dialog" aria-modal="true" aria-labelledby="providerModelsTitle" aria-hidden="true">
+    <div class="modal">
+      <div class="modal-head">
+        <div><h2 id="providerModelsTitle">测试生图连接</h2><p>选择生图模型、编辑测试提示词和默认参数，完成后直接预览真实生成结果。</p></div>
+        <button class="icon-btn" id="closeProviderModelsModal" type="button" aria-label="关闭模型管理">×</button>
+      </div>
+      <div class="modal-body" style="grid-template-columns:1fr">
+        <section class="template-editor">
+          <div class="field"><label for="prototypeTestModel">生图模型</label><select id="prototypeTestModel"><option>GPT Image 1</option><option>GPT Image 1.5</option><option>GPT Image 2</option></select></div>
+          <div class="field"><label for="prototypeTestPrompt">测试提示词（可修改）</label><textarea id="prototypeTestPrompt" rows="4">A cinematic studio photograph of a translucent purple glass sculpture on a clean white pedestal, soft diffused lighting, high detail.</textarea></div>
+          <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px"><div class="field"><label>尺寸</label><select><option>Auto</option><option>1024 × 1024</option></select></div><div class="field"><label>质量</label><select><option>Auto</option><option>High</option></select></div><div class="field"><label>数量</label><input value="1" disabled></div></div>
+          <div class="capability-note">测试会发起一次真实生图请求并可能产生上游费用；诊断图片只在当前窗口预览，不进入历史作品。</div>
+          <div class="image-card" id="prototypeProviderTestResult" hidden><div class="mini-art" style="height:260px"></div><div class="card-foot"><strong>GPT Image 1 · 测试成功</strong><small>1024 × 1024 · PNG · 1.8s</small></div></div>
+          <div class="modal-actions"><button class="primary-btn" id="runPrototypeProviderTest" type="button">生成测试图片</button></div>
+          <div class="table-wrap" style="margin-top:18px"><table><thead><tr><th>生图模型</th><th>单张价格</th><th>权限</th></tr></thead><tbody><tr><td>gpt-image-1</td><td><input value="0.040" aria-label="gpt-image-1 单张价格" style="width:100px"> USD</td><td><span class="role-badge">管理员可编辑</span></td></tr><tr><td>gpt-image-1-mini</td><td><input value="0.015" aria-label="gpt-image-1-mini 单张价格" style="width:100px"> USD</td><td><span class="role-badge">管理员可编辑</span></td></tr></tbody></table></div>
+          <div class="modal-actions"><button class="primary-btn" id="savePrototypePricing" type="button">保存价格（管理员）</button></div>
+        </section>
+      </div>
+    </div>
+  </div>
+  <div class="toast" id="toast">操作完成</div>
+
+  <script>
+    const pages = document.querySelectorAll('[data-page]');
+    const navButtons = document.querySelectorAll('[data-view]');
+    const app = document.querySelector('.app');
+    const title = document.getElementById('viewTitle');
+    const subtitle = document.getElementById('viewSubtitle');
+    const labels = {
+      studio: ['雨夜霓虹人物海报', '多轮会话 · 第 3 轮'],
+      history: ['历史作品', '所有已持久化图片'],
+      usage: ['用量与成本', '最近 30 天 · 不同币种分别汇总'],
+      providers: ['我的 Provider', '当前用户的模型与能力配置'],
+      users: ['用户管理', '管理员专属 · 用户与资源摘要'],
+      operations: ['运营监控', '管理员专属 · 任务、Provider 与日志'],
+      settings: ['存储与系统设置', '管理员专属 · Local / S3 配置'],
+      updates: ['版本与升级', '管理员专属 · Host Updater 控制面']
+    };
+
+    function activateView(view) {
+      app.dataset.activeView = view;
+      navButtons.forEach(item => item.classList.toggle('active', item.dataset.view === view));
+      pages.forEach(page => page.classList.toggle('active', page.dataset.page === view));
+      title.textContent = labels[view][0];
+      subtitle.textContent = labels[view][1];
+    }
+
+    navButtons.forEach(button => button.addEventListener('click', () => activateView(button.dataset.view)));
+    const initialView = new URLSearchParams(window.location.search).get('view');
+    if (labels[initialView]) activateView(initialView);
+
+    const sessionList = document.querySelector('.session-list');
+    const prototypeSessionSearch = document.getElementById('prototypeSessionSearch');
+    prototypeSessionSearch.addEventListener('input', () => {
+      const query = prototypeSessionSearch.value.trim().toLocaleLowerCase();
+      let matches = 0;
+      sessionList.querySelectorAll('.session').forEach(item => {
+        const visible = item.querySelector('.session-title').textContent.toLocaleLowerCase().includes(query);
+        item.hidden = !visible;
+        item.draggable = !query;
+        if (visible) matches += 1;
+      });
+      document.getElementById('prototypeSessionEmpty').hidden = matches > 0;
+    });
+    function selectSession(item) {
+      sessionList.querySelectorAll('.session').forEach(session => session.classList.remove('active'));
+      item.classList.add('active');
+      title.textContent = item.querySelector('.session-title').textContent;
+    }
+
+    function startSessionRename(item) {
+      if (item.querySelector('.session-title-input')) return;
+      const label = item.querySelector('.session-title');
+      const originalTitle = label.textContent;
+      const input = document.createElement('input');
+      input.className = 'session-title-input';
+      input.value = originalTitle;
+      input.maxLength = 256;
+      input.setAttribute('aria-label', '会话标题');
+      label.hidden = true;
+      item.draggable = false;
+      item.querySelector('.session-content').prepend(input);
+      let settled = false;
+
+      function finish(commit) {
+        if (settled) return;
+        settled = true;
+        const nextTitle = input.value.trim();
+        if (commit && nextTitle) {
+          label.textContent = nextTitle;
+          if (item.classList.contains('active')) title.textContent = nextTitle;
+          showToast(`会话标题已修改为「${nextTitle}」`);
+        }
+        input.remove();
+        label.hidden = false;
+        item.draggable = true;
+      }
+
+      input.addEventListener('keydown', event => {
+        if (event.key === 'Enter') finish(true);
+        if (event.key === 'Escape') finish(false);
+      });
+      input.addEventListener('blur', () => finish(true));
+      input.focus();
+      input.select();
+    }
+
+    sessionList.addEventListener('click', event => {
+      const item = event.target.closest('.session');
+      if (!item) return;
+      if (event.target.closest('.rename-session')) {
+        startSessionRename(item);
+        return;
+      }
+      if (!event.target.closest('.session-title-input')) selectSession(item);
+    });
+
+    let draggedSession = null;
+    sessionList.addEventListener('dragstart', event => {
+      const item = event.target.closest('.session');
+      if (!item) return;
+      draggedSession = item;
+      item.classList.add('dragging');
+      event.dataTransfer.effectAllowed = 'move';
+      event.dataTransfer.setData('text/plain', item.querySelector('.session-title').textContent);
+    });
+    sessionList.addEventListener('dragover', event => {
+      const target = event.target.closest('.session');
+      if (!draggedSession || !target || target === draggedSession) return;
+      event.preventDefault();
+      sessionList.querySelectorAll('.drag-over').forEach(item => item.classList.remove('drag-over'));
+      target.classList.add('drag-over');
+      const after = event.clientY > target.getBoundingClientRect().top + target.offsetHeight / 2;
+      sessionList.insertBefore(draggedSession, after ? target.nextSibling : target);
+    });
+    sessionList.addEventListener('drop', event => {
+      if (!draggedSession) return;
+      event.preventDefault();
+      showToast('会话顺序已更新');
+    });
+    sessionList.addEventListener('dragend', () => {
+      sessionList.querySelectorAll('.session').forEach(item => item.classList.remove('dragging', 'drag-over'));
+      draggedSession = null;
+    });
+
+    const prototypeHistoryFields = {
+      conversation: document.getElementById('prototypeHistoryConversation'),
+      provider: document.getElementById('prototypeHistoryProvider'),
+      model: document.getElementById('prototypeHistoryModel'),
+      from: document.getElementById('prototypeHistoryFrom'),
+      to: document.getElementById('prototypeHistoryTo'),
+      size: document.getElementById('prototypeHistorySize')
+    };
+    function applyPrototypeHistoryFilters() {
+      let matches = 0;
+      document.querySelectorAll('[data-history-card]').forEach(card => {
+        const visible =
+          (!prototypeHistoryFields.conversation.value || card.dataset.conversation === prototypeHistoryFields.conversation.value) &&
+          (!prototypeHistoryFields.provider.value || card.dataset.provider === prototypeHistoryFields.provider.value) &&
+          (!prototypeHistoryFields.model.value || card.dataset.model === prototypeHistoryFields.model.value) &&
+          (!prototypeHistoryFields.from.value || card.dataset.date >= prototypeHistoryFields.from.value) &&
+          (!prototypeHistoryFields.to.value || card.dataset.date <= prototypeHistoryFields.to.value) &&
+          (!prototypeHistoryFields.size.value || card.dataset.size === prototypeHistoryFields.size.value);
+        card.hidden = !visible;
+        if (visible) matches += 1;
+      });
+      document.getElementById('prototypeHistoryEmpty').style.display = matches ? 'none' : 'block';
+      showToast(`历史筛选完成：${matches} 个作品`);
+    }
+    document.getElementById('applyPrototypeHistory').addEventListener('click', applyPrototypeHistoryFilters);
+    document.getElementById('resetPrototypeHistory').addEventListener('click', () => {
+      Object.values(prototypeHistoryFields).forEach(field => { field.value = ''; });
+      applyPrototypeHistoryFilters();
+    });
+
+    document.querySelectorAll('.driver-tab').forEach(button => button.addEventListener('click', () => {
+      document.querySelectorAll('.driver-tab').forEach(item => item.classList.remove('active'));
+      document.querySelectorAll('[data-driver-form]').forEach(form => form.classList.remove('active'));
+      button.classList.add('active');
+      document.querySelector(`[data-driver-form="${button.dataset.driver}"]`).classList.add('active');
+    }));
+    const initialDriver = new URLSearchParams(window.location.search).get('driver');
+    if (initialDriver === 's3') document.querySelector('[data-driver="s3"]').click();
+
+    const providerSelect = document.getElementById('providerSelect');
+    const imageModel = document.getElementById('imageModel');
+    const discoverSummary = document.getElementById('discoverSummary');
+    const schemaSource = document.getElementById('schemaSource');
+    const capabilityNote = document.getElementById('capabilityNote');
+    const providerModelCatalog = {
+      openai: {
+        verified: [
+          ['gpt-image-2', 'GPT Image 2'],
+          ['gpt-image-1.5', 'GPT Image 1.5'],
+          ['gpt-image-1', 'GPT Image 1'],
+          ['gpt-image-1-mini', 'GPT Image 1 Mini'],
+          ['dall-e-3', 'DALL·E 3 · Legacy']
+        ],
+        pending: [['custom-image-preview', 'custom-image-preview']]
+      },
+      gemini: {
+        verified: [['gemini-2.5-flash-image', 'Gemini 2.5 Flash Image'], ['imagen-4.0-generate-001', 'Imagen 4']],
+        pending: [['gemini-image-experimental', 'gemini-image-experimental']]
+      },
+      grok: {
+        verified: [['grok-imagine-image', 'Grok Imagine Image'], ['grok-imagine-image-quality', 'Grok Imagine Image Quality']],
+        pending: []
+      }
+    };
+
+    function renderDiscoveredModels(providerKey) {
+      const catalog = providerModelCatalog[providerKey];
+      imageModel.replaceChildren();
+      const verifiedGroup = document.createElement('optgroup');
+      verifiedGroup.label = '已验证可生图';
+      catalog.verified.forEach(([value, label]) => verifiedGroup.append(new Option(`✓ ${label}`, value)));
+      imageModel.append(verifiedGroup);
+      if (catalog.pending.length) {
+        const pendingGroup = document.createElement('optgroup');
+        pendingGroup.label = '待分类 · 默认不用于生图';
+        catalog.pending.forEach(([value, label]) => pendingGroup.append(new Option(`? ${label}`, value)));
+        imageModel.append(pendingGroup);
+      }
+      discoverSummary.textContent = `${catalog.verified.length} 个已验证 · ${catalog.pending.length} 个待分类`;
+      updateModelCapabilities();
+    }
+
+    function updateModelCapabilities() {
+      const transparent = document.querySelector('[data-transparent]');
+      const fields = document.querySelectorAll('[data-param]');
+      fields.forEach(field => { field.hidden = true; });
+      const isGptImage = providerSelect.value === 'openai' && imageModel.value.startsWith('gpt-image');
+      const isDallE3 = providerSelect.value === 'openai' && imageModel.value === 'dall-e-3';
+      const isPending = imageModel.value.includes('preview') || imageModel.value.includes('experimental');
+
+      if (isGptImage) {
+        ['output-format', 'output-compression', 'background', 'moderation', 'partial-images'].forEach(name => {
+          document.querySelector(`[data-param="${name}"]`).hidden = false;
+        });
+        schemaSource.textContent = 'OpenAI 官方文档 + Parameter Schema';
+        capabilityNote.textContent = '当前参数来自 OpenAI 官方 Images API Schema。标准模型列表接口只负责发现候选模型；Seed、Steps、CFG 等未声明参数不会显示或发送。';
+      } else if (isDallE3) {
+        document.querySelector('[data-param="native-style"]').hidden = false;
+        schemaSource.textContent = 'DALL·E 3 官方模型 Schema';
+        capabilityNote.textContent = 'Vivid / Natural 是 DALL·E 3 的真实原生 style 参数，与上方作为 Prompt 文本的创作风格模板不是同一概念。';
+      } else {
+        schemaSource.textContent = isPending ? '待分类 · 尚无可信 Schema' : '当前 Provider Adapter Schema';
+        capabilityNote.textContent = isPending
+          ? '该模型仅由模型列表接口发现，尚未验证生图能力，因此不展示或发送任何高级参数。'
+          : '此原型未为当前示例模型声明额外高级参数；正式页面只渲染对应 Provider Adapter 返回的 Schema。';
+      }
+
+      const transparentUnsupported = imageModel.value === 'gpt-image-2';
+      transparent.disabled = transparentUnsupported;
+      if (transparentUnsupported && transparent.classList.contains('active')) {
+        transparent.parentElement.querySelector('button').click();
+      }
+    }
+
+    providerSelect.addEventListener('change', () => {
+      renderDiscoveredModels(providerSelect.value);
+      showToast('已加载当前 Provider 的已发现模型');
+    });
+    imageModel.addEventListener('change', () => {
+      updateModelCapabilities();
+      showToast(`已加载 ${imageModel.selectedOptions[0].text.replace('✓ ', '')} 参数 Schema`);
+    });
+    document.getElementById('refreshModels').addEventListener('click', () => {
+      const catalog = providerModelCatalog[providerSelect.value];
+      showToast(`模型刷新完成：${catalog.verified.length} 个已验证，${catalog.pending.length} 个待分类`);
+    });
+
+    const requestedProvider = new URLSearchParams(window.location.search).get('provider');
+    if (providerModelCatalog[requestedProvider]) {
+      providerSelect.value = requestedProvider;
+      renderDiscoveredModels(requestedProvider);
+    }
+    const requestedModel = new URLSearchParams(window.location.search).get('model');
+    if (requestedModel && [...imageModel.options].some(option => option.value === requestedModel)) {
+      imageModel.value = requestedModel;
+    }
+    updateModelCapabilities();
+
+    document.querySelectorAll('.segmented').forEach(group => group.addEventListener('click', event => {
+      const button = event.target.closest('button');
+      if (!button || button.disabled) return;
+      group.querySelectorAll('button').forEach(item => item.classList.remove('active'));
+      button.classList.add('active');
+    }));
+    const styleGrid = document.getElementById('styleGrid');
+    styleGrid.addEventListener('click', event => {
+      const card = event.target.closest('.style-card');
+      if (!card) return;
+      styleGrid.querySelectorAll('.style-card').forEach(item => item.classList.remove('active'));
+      card.classList.add('active');
+      showToast(`已选择「${card.querySelector('strong').textContent}」Prompt 模板`);
+    });
+
+    document.querySelectorAll('.switch').forEach(control => control.addEventListener('click', () => {
+      const enabled = control.classList.toggle('on');
+      control.setAttribute('aria-checked', String(enabled));
+    }));
+
+    const themeToggle = document.getElementById('themeToggle');
+    const themeIcon = document.getElementById('themeIcon');
+    const themeLabel = document.getElementById('themeLabel');
+    function applyTheme(theme) {
+      document.body.dataset.theme = theme;
+      const isLight = theme === 'light';
+      themeIcon.textContent = isLight ? '☾' : '☀';
+      themeLabel.textContent = isLight ? 'Dark' : 'Light';
+      themeToggle.setAttribute('aria-pressed', String(isLight));
+    }
+    const requestedTheme = new URLSearchParams(window.location.search).get('theme');
+    const savedTheme = window.localStorage.getItem('ai-image-studio-theme');
+    applyTheme(requestedTheme === 'light' || requestedTheme === 'dark' ? requestedTheme : (savedTheme || 'dark'));
+    themeToggle.addEventListener('click', () => {
+      const nextTheme = document.body.dataset.theme === 'light' ? 'dark' : 'light';
+      applyTheme(nextTheme);
+      window.localStorage.setItem('ai-image-studio-theme', nextTheme);
+    });
+
+    const toast = document.getElementById('toast');
+    function showToast(message) {
+      toast.textContent = message;
+      toast.classList.add('show');
+      window.setTimeout(() => toast.classList.remove('show'), 1800);
+    }
+
+    const accountAvatar = document.getElementById('accountAvatar');
+    const accountMenu = document.getElementById('accountMenu');
+    const accountSettingsModal = document.getElementById('accountSettingsModal');
+    function setAccountMenu(open) {
+      accountMenu.classList.toggle('open', open);
+      accountMenu.setAttribute('aria-hidden', String(!open));
+      accountAvatar.setAttribute('aria-expanded', String(open));
+    }
+    function setAccountSettingsModal(open) {
+      accountSettingsModal.classList.toggle('open', open);
+      accountSettingsModal.setAttribute('aria-hidden', String(!open));
+      if (open) {
+        setAccountMenu(false);
+        window.setTimeout(() => document.getElementById('prototypeThemePreference').focus(), 0);
+      }
+    }
+    accountAvatar.addEventListener('click', event => {
+      event.stopPropagation();
+      setAccountMenu(!accountMenu.classList.contains('open'));
+    });
+    accountMenu.addEventListener('click', event => {
+      const action = event.target.closest('[data-account-action]')?.dataset.accountAction;
+      if (!action) return;
+      if (action === 'profile') setAccountSettingsModal(true);
+      if (action === 'users') {
+        activateView('users');
+        showToast('已进入管理员用户管理');
+      }
+      if (action === 'theme') {
+        themeToggle.click();
+        showToast('主题已切换并保存');
+      }
+      if (action === 'password') showToast('原型：打开修改密码表单');
+      if (action === 'logout' && window.confirm('确认退出当前账号？尚未发送的创作内容不会保存。')) showToast('原型：已确认退出登录');
+      setAccountMenu(false);
+    });
+    document.addEventListener('click', event => {
+      if (!accountMenu.contains(event.target) && event.target !== accountAvatar) setAccountMenu(false);
+    });
+    document.getElementById('closeAccountSettings').addEventListener('click', () => setAccountSettingsModal(false));
+    document.getElementById('cancelAccountSettings').addEventListener('click', () => setAccountSettingsModal(false));
+    accountSettingsModal.addEventListener('click', event => {
+      if (event.target === accountSettingsModal) setAccountSettingsModal(false);
+    });
+    document.getElementById('saveAccountSettings').addEventListener('click', () => {
+      const preference = document.getElementById('prototypeThemePreference').value;
+      const resolvedTheme = preference === 'system'
+        ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+        : preference;
+      applyTheme(resolvedTheme);
+      setAccountSettingsModal(false);
+      showToast('个人设置已保存');
+    });
+
+    const styleTemplateModal = document.getElementById('styleTemplateModal');
+    const styleTemplateList = document.getElementById('styleTemplateList');
+    const styleTemplateName = document.getElementById('styleTemplateName');
+    const styleTemplatePrompt = document.getElementById('styleTemplatePrompt');
+    let editingTemplateRow = styleTemplateList.querySelector('.template-row.active');
+
+    function selectTemplateRow(row) {
+      styleTemplateList.querySelectorAll('.template-row').forEach(item => item.classList.remove('active'));
+      row.classList.add('active');
+      editingTemplateRow = row;
+      styleTemplateName.value = row.dataset.templateName;
+      styleTemplatePrompt.value = row.dataset.templatePrompt;
+    }
+
+    function setStyleTemplateModal(open) {
+      styleTemplateModal.classList.toggle('open', open);
+      styleTemplateModal.setAttribute('aria-hidden', String(!open));
+      if (open) {
+        setAccountMenu(false);
+        window.setTimeout(() => styleTemplateName.focus(), 0);
+      }
+    }
+
+    document.getElementById('manageStyleTemplates').addEventListener('click', () => setStyleTemplateModal(true));
+    document.getElementById('closeStyleTemplateModal').addEventListener('click', () => setStyleTemplateModal(false));
+    document.getElementById('cancelStyleTemplate').addEventListener('click', () => setStyleTemplateModal(false));
+    styleTemplateModal.addEventListener('click', event => {
+      if (event.target === styleTemplateModal) setStyleTemplateModal(false);
+    });
+    styleTemplateList.addEventListener('click', event => {
+      const row = event.target.closest('.template-row');
+      if (row) selectTemplateRow(row);
+    });
+    document.getElementById('newStyleTemplate').addEventListener('click', () => {
+      styleTemplateList.querySelectorAll('.template-row').forEach(item => item.classList.remove('active'));
+      editingTemplateRow = null;
+      styleTemplateName.value = '';
+      styleTemplatePrompt.value = '';
+      styleTemplateName.focus();
+    });
+    document.getElementById('saveStyleTemplate').addEventListener('click', () => {
+      const name = styleTemplateName.value.trim();
+      const promptText = styleTemplatePrompt.value.trim();
+      if (!name || !promptText) {
+        showToast('请填写模板名称和风格说明');
+        return;
+      }
+
+      const previousName = editingTemplateRow?.dataset.templateName;
+      if (!editingTemplateRow) {
+        editingTemplateRow = document.createElement('button');
+        editingTemplateRow.type = 'button';
+        editingTemplateRow.className = 'template-row';
+        editingTemplateRow.append(document.createElement('strong'), document.createElement('small'));
+        editingTemplateRow.querySelector('small').textContent = '我的模板 · 已启用';
+        styleTemplateList.append(editingTemplateRow);
+      }
+      editingTemplateRow.dataset.templateName = name;
+      editingTemplateRow.dataset.templatePrompt = promptText;
+      editingTemplateRow.querySelector('strong').textContent = name;
+      selectTemplateRow(editingTemplateRow);
+
+      let styleCard = previousName ? styleGrid.querySelector(`[data-template-name="${CSS.escape(previousName)}"]`) : null;
+      if (!styleCard) {
+        styleCard = document.createElement('button');
+        styleCard.type = 'button';
+        styleCard.className = 'style-card';
+        styleCard.append(document.createElement('strong'), document.createElement('span'));
+        const noStyleCard = styleGrid.querySelector('[data-template-name="不指定"]');
+        styleGrid.insertBefore(styleCard, noStyleCard);
+      }
+      styleCard.dataset.templateName = name;
+      styleCard.querySelector('strong').textContent = name;
+      styleCard.querySelector('span').textContent = promptText.length > 12 ? `${promptText.slice(0, 12)}…` : promptText;
+
+      setStyleTemplateModal(false);
+      showToast(`风格模板「${name}」已保存`);
+    });
+
+    const providerModelsModal = document.getElementById('providerModelsModal');
+    function setProviderModelsModal(open, providerName = '') {
+      providerModelsModal.classList.toggle('open', open);
+      providerModelsModal.setAttribute('aria-hidden', String(!open));
+      if (providerName) document.getElementById('providerModelsTitle').textContent = `${providerName} · 测试生图连接`;
+    }
+    document.querySelector('[data-page="providers"]').addEventListener('click', event => {
+      const action = event.target.closest('[data-provider-action]')?.dataset.providerAction;
+      if (!action) return;
+      const card = event.target.closest('[data-provider-card]');
+      const providerName = card.querySelector('h3').textContent;
+      if (action === 'test') setProviderModelsModal(true, providerName);
+      if (action === 'models') setProviderModelsModal(true, providerName);
+    });
+    document.getElementById('closeProviderModelsModal').addEventListener('click', () => setProviderModelsModal(false));
+    providerModelsModal.addEventListener('click', event => {
+      if (event.target === providerModelsModal) setProviderModelsModal(false);
+    });
+    document.getElementById('runPrototypeProviderTest').addEventListener('click', () => {
+      document.getElementById('prototypeProviderTestResult').hidden = false;
+      showToast('真实测试图片已生成并展示');
+    });
+    document.getElementById('savePrototypePricing').addEventListener('click', () => showToast('模型价格已保存，历史费用快照不受影响'));
+    document.getElementById('addPrototypeProvider').addEventListener('click', () => showToast('原型：打开 Provider 配置表单'));
+
+    document.addEventListener('keydown', event => {
+      if (event.key !== 'Escape') return;
+      if (providerModelsModal.classList.contains('open')) setProviderModelsModal(false);
+      else if (styleTemplateModal.classList.contains('open')) setStyleTemplateModal(false);
+      else if (accountSettingsModal.classList.contains('open')) setAccountSettingsModal(false);
+      else setAccountMenu(false);
+    });
+
+    const initialUiState = new URLSearchParams(window.location.search);
+    if (initialUiState.get('dialog') === 'styles') setStyleTemplateModal(true);
+    if (initialUiState.get('menu') === 'account') setAccountMenu(true);
+
+    document.getElementById('saveStorage').addEventListener('click', () => showToast('存储配置已保存，重启服务后生效'));
+    document.getElementById('testStorage').addEventListener('click', () => showToast('原型：存储读写测试通过'));
+    document.getElementById('scanPrototypeConsistency').addEventListener('click', () => {
+      document.getElementById('prototypeConsistencyStatus').textContent = '刚刚扫描 · 0 缺失 · 2 孤儿';
+      showToast('一致性扫描完成，未删除文件');
+    });
+    document.getElementById('cleanupPrototypeOrphans').addEventListener('click', () => {
+      if (!window.confirm('只清理超过安全宽限期、数据库无记录且符合平台 Asset Key 格式的孤儿文件，是否继续？')) return;
+      document.getElementById('prototypeConsistencyStatus').textContent = '刚刚清理 · 2 个孤儿文件';
+      showToast('过期孤儿文件清理完成');
+    });
+    document.getElementById('newConversation').addEventListener('click', () => showToast('已创建空白会话原型'));
+    document.getElementById('createUser').addEventListener('click', () => showToast('原型：打开创建用户表单'));
+    document.getElementById('checkPrototypeUpdate').addEventListener('click', () => showToast('原型：Release Manifest 校验通过'));
+    document.getElementById('startPrototypeUpdate').addEventListener('click', () => showToast('原型：请二次输入管理员密码'));
+    const prototypeBranches = [
+      '保持暖色夕阳和留白，只把人物服装改为黑色风衣。',
+      '用第二张继续。保持人物和镜头不变，把场景改成雨夜霓虹街道，增加青紫色反光。'
+    ];
+    let activePrototypeBranch = 1;
+    const prototypeBranchMessage = document.getElementById('prototypeBranchMessage');
+    const prototypeBranchLabel = document.getElementById('prototypeBranchLabel');
+    const previousPrototypeBranch = document.getElementById('previousPrototypeBranch');
+    const nextPrototypeBranch = document.getElementById('nextPrototypeBranch');
+    function renderPrototypeBranch() {
+      prototypeBranchMessage.textContent = prototypeBranches[activePrototypeBranch];
+      prototypeBranchLabel.textContent = `分支 ${activePrototypeBranch + 1} / ${prototypeBranches.length}`;
+      previousPrototypeBranch.disabled = activePrototypeBranch === 0;
+      nextPrototypeBranch.disabled = activePrototypeBranch === prototypeBranches.length - 1;
+    }
+    previousPrototypeBranch.addEventListener('click', () => {
+      if (activePrototypeBranch === 0) return;
+      activePrototypeBranch -= 1;
+      renderPrototypeBranch();
+      showToast('已切换到上一个消息分支');
+    });
+    nextPrototypeBranch.addEventListener('click', () => {
+      if (activePrototypeBranch === prototypeBranches.length - 1) return;
+      activePrototypeBranch += 1;
+      renderPrototypeBranch();
+      showToast('已切换到下一个消息分支');
+    });
+    const prototypeBranchAnchor = document.getElementById('prototypeBranchAnchor');
+    document.getElementById('continueFromMessage').addEventListener('click', () => {
+      prototypeBranchAnchor.hidden = false;
+      document.getElementById('prompt').focus();
+      showToast('下一条消息将从所选历史助手消息继续');
+    });
+    document.getElementById('cancelPrototypeBranch').addEventListener('click', () => {
+      prototypeBranchAnchor.hidden = true;
+      showToast('已恢复到当前分支末端');
+    });
+    document.getElementById('cancelPrototypeTask').addEventListener('click', event => {
+      event.currentTarget.disabled = true;
+      event.currentTarget.textContent = '已取消';
+      document.getElementById('prototypeTaskSpinner').hidden = true;
+      document.getElementById('prototypeTaskProgress').hidden = true;
+      document.getElementById('prototypeTaskStatus').textContent = '生成已取消';
+      document.getElementById('prototypeTaskDetail').textContent = '任务与助手消息已进入 cancelled 终态';
+      showToast('任务已取消，已停止接收和保存后续图片');
+    });
+    document.getElementById('retryPrototypeTask').addEventListener('click', event => {
+      event.currentTarget.disabled = true;
+      event.currentTarget.textContent = '重试中';
+      document.getElementById('prototypeRetryStatus').textContent = '正在重新生成';
+      document.getElementById('prototypeRetryDetail').textContent = '复用原任务参数，并从新的 SSE 事件游标继续';
+      showToast('已重试原任务，不会创建重复的会话分支');
+    });
+    document.getElementById('regenerateMessage').addEventListener('click', () => {
+      showToast('已模拟复用原用户消息与输入图片创建同级分支');
+    });
+    document.getElementById('sendPrompt').addEventListener('click', () => {
+      const input = document.getElementById('prompt');
+      if (!input.value.trim()) {
+        showToast('请先输入本轮要求');
+        return;
+      }
+      document.getElementById('prototypeTaskSpinner').hidden = false;
+      document.getElementById('prototypeTaskProgress').hidden = false;
+      document.getElementById('prototypeTaskStatus').textContent = '正在恢复连接';
+      document.getElementById('prototypeTaskDetail').textContent = '连接中断 · 正在携带 Last-Event-ID 续传任务事件';
+      showToast('已模拟任务级 SSE 断线恢复');
+      input.value = '';
+      window.setTimeout(() => {
+        if (document.getElementById('prototypeTaskStatus').textContent !== '正在恢复连接') return;
+        document.getElementById('prototypeTaskStatus').textContent = '模型正在生成';
+        document.getElementById('prototypeTaskDetail').textContent = 'provider.processing · 已恢复';
+      }, 1200);
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,1039 @@
+<script setup lang="ts">
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { NButton, NInput, NInputNumber, NModal, NSelect, NSwitch, useMessage } from 'naive-ui'
+import { api, streamPost, streamTask } from '@/api/client'
+import {
+  branchPath,
+  branchPosition,
+  latestDescendantId,
+  latestMessageId,
+} from '@/lib/conversationBranches'
+import type {
+  Conversation,
+  ConversationDetail,
+  ConversationMessage,
+  ImageAsset,
+  ImageModel,
+  ParameterDefinition,
+  PromptTemplate,
+  Provider,
+  TaskEvent,
+} from '@/types/api'
+
+const message = useMessage()
+const conversations = ref<Conversation[]>([])
+const activeConversation = ref<ConversationDetail | null>(null)
+const providers = ref<Provider[]>([])
+const models = ref<ImageModel[]>([])
+const templates = ref<PromptTemplate[]>([])
+const conversationSearch = ref('')
+const providerId = ref<string | null>(null)
+const modelId = ref<string | null>(null)
+const prompt = ref('')
+const styleId = ref<string | null>(null)
+interface ComposerAttachment {
+  file: File
+  previewUrl: string
+}
+const files = ref<ComposerAttachment[]>([])
+const fileInput = ref<HTMLInputElement | null>(null)
+const sending = ref(false)
+const activeTaskId = ref<string | null>(null)
+const cancelling = ref(false)
+const retryingTaskId = ref<string | null>(null)
+const taskStage = ref('')
+const taskElapsedSeconds = ref(0)
+let taskTimer: ReturnType<typeof setInterval> | null = null
+const messageTimeFormatter = new Intl.DateTimeFormat('zh-CN', {
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hour12: false,
+})
+const pendingUserMessage = ref<{
+  conversationId: string
+  content: string
+  createdAt: string
+} | null>(null)
+const partialPreview = ref<{ contentUrl: string; label: string } | null>(null)
+const editingTitle = ref<string | null>(null)
+const titleDraft = ref('')
+const draggedIndex = ref<number | null>(null)
+const timeline = ref<HTMLElement | null>(null)
+const composerInput = ref<HTMLTextAreaElement | null>(null)
+const activeLeafId = ref<string | null>(null)
+const composerParentId = ref<string | null>(null)
+const templateManagerOpen = ref(false)
+const editingTemplateId = ref<string | null>(null)
+const templateTitle = ref('')
+const templatePrompt = ref('')
+const imagePreviewOpen = ref(false)
+const imagePreview = ref<{ contentUrl: string; label: string; metadata: string } | null>(null)
+const parameterPanelWidth = ref(340)
+const viewportWidth = ref(window.innerWidth)
+const resizingParameterPanel = ref(false)
+type ParameterValue = string | number | boolean | null
+type ParameterMemory = Record<string, Record<string, ParameterValue>>
+const parameterMemoryKey = 'studio-generation-parameters-v1'
+const parameters = reactive<Record<string, ParameterValue>>({ aspect_ratio: 'auto' })
+const supportedImageTypes = new Set(['image/png', 'image/jpeg', 'image/webp'])
+const parameterPanelMinWidth = 320
+const parameterPanelMaxLimit = 760
+let stopParameterResize: (() => void) | null = null
+
+const conversationMessages = computed(() => activeConversation.value?.messages ?? [])
+const filteredConversations = computed(() => {
+  const query = conversationSearch.value.trim().toLocaleLowerCase()
+  return query
+    ? conversations.value.filter((item) => item.title.toLocaleLowerCase().includes(query))
+    : conversations.value
+})
+const visibleMessages = computed(() => branchPath(conversationMessages.value, activeLeafId.value))
+const visiblePendingUserMessage = computed(() =>
+  pendingUserMessage.value?.conversationId === activeConversation.value?.id
+    ? pendingUserMessage.value
+    : null,
+)
+const visibleLeafId = computed(() => visibleMessages.value[visibleMessages.value.length - 1]?.id ?? null)
+const currentBranchParentId = computed(() => {
+  if (composerParentId.value) return composerParentId.value
+  return [...visibleMessages.value].reverse().find((item) => item.role === 'assistant')?.id ?? null
+})
+const composerAnchor = computed(() =>
+  composerParentId.value
+    ? conversationMessages.value.find((item) => item.id === composerParentId.value) ?? null
+    : null,
+)
+const currentModel = computed(() => models.value.find((item) => item.id === modelId.value) ?? null)
+const currentTemplate = computed(() => templates.value.find((item) => item.id === styleId.value) ?? null)
+const providerOptions = computed(() => providers.value.map((item) => ({ label: item.displayName, value: item.id })))
+const modelOptions = computed(() =>
+  models.value
+    .filter((item) => item.providerId === providerId.value && item.enabled)
+    .map((item) => ({
+      label: `${item.displayName}${item.availabilityStatus === 'verified' ? '' : ' · 待分类'}`,
+      value: item.id,
+      disabled: item.availabilityStatus !== 'verified',
+    })),
+)
+const styleOptions = computed(() => [
+  { label: '不使用风格模板', value: '' },
+  ...templates.value.map((item) => ({ label: item.title, value: item.id })),
+])
+const schema = computed(() => currentModel.value?.parameterSchema.parameters ?? {})
+const advancedParameters = computed(() =>
+  Object.entries(schema.value).filter(
+    ([name, definition]) =>
+      !['aspect_ratio', 'size', 'quality', 'n'].includes(name) && isParameterVisible(name, definition),
+  ),
+)
+const aspectRatioOptions = computed(() =>
+  enumOptions('aspect_ratio', ['auto', '1:1', '16:9', '9:16', '3:2', '2:3']),
+)
+const sizeOptions = computed(() => enumOptions('size', ['auto', '1024x1024', '1536x1024', '1024x1536']))
+const qualityOptions = computed(() => enumOptions('quality', ['auto', 'low', 'medium', 'high']))
+const taskStatusWithElapsed = computed(
+  () => `${taskStage.value || '模型正在生成'} · ${formatDuration(taskElapsedSeconds.value)}`,
+)
+const parameterPanelMaxWidth = computed(() =>
+  Math.max(parameterPanelMinWidth, Math.min(parameterPanelMaxLimit, viewportWidth.value - 72 - 286 - 420)),
+)
+
+watch(providerId, async (value) => {
+  const available = models.value.filter((item) => item.providerId === value && item.availabilityStatus === 'verified')
+  if (!available.some((item) => item.id === modelId.value)) modelId.value = available[0]?.id ?? null
+})
+
+watch(modelId, (value) => {
+  for (const key of Object.keys(parameters)) delete parameters[key]
+  parameters.aspect_ratio = 'auto'
+  for (const [key, definition] of Object.entries(schema.value)) {
+    const value = definition.default
+    if (
+      typeof value === 'string' ||
+      typeof value === 'number' ||
+      typeof value === 'boolean' ||
+      value === null
+    ) {
+      parameters[key] = value
+    }
+  }
+  if (!value) return
+  const remembered = readParameterMemory()[value]
+  if (!remembered) return
+  for (const [key, rememberedValue] of Object.entries(remembered)) {
+    const definition = schema.value[key]
+    if (definition && acceptsParameterValue(definition, rememberedValue)) {
+      parameters[key] = rememberedValue
+    }
+  }
+})
+
+watch(parameterPanelWidth, (value) => {
+  document.documentElement.style.setProperty('--studio-parameter-panel-width', `${value}px`)
+}, { immediate: true })
+
+onMounted(async () => {
+  window.addEventListener('resize', updateParameterPanelBounds)
+  updateParameterPanelBounds()
+  await Promise.all([loadConversations(), loadProviders(), loadModels(), loadTemplates()])
+  if (!providerId.value) providerId.value = providers.value[0]?.id ?? null
+  if (conversations.value[0]) await selectConversation(conversations.value[0].id)
+})
+
+onBeforeUnmount(() => {
+  stopTaskTimer()
+  stopParameterResize?.()
+  files.value.forEach((attachment) => URL.revokeObjectURL(attachment.previewUrl))
+  window.removeEventListener('resize', updateParameterPanelBounds)
+  document.documentElement.style.removeProperty('--studio-parameter-panel-width')
+})
+
+function startTaskTimer(startedAt = Date.now()) {
+  stopTaskTimer()
+  const update = () => {
+    taskElapsedSeconds.value = Math.max(0, Math.floor((Date.now() - startedAt) / 1000))
+  }
+  update()
+  taskTimer = setInterval(update, 1000)
+}
+
+function stopTaskTimer() {
+  if (taskTimer) clearInterval(taskTimer)
+  taskTimer = null
+}
+
+function formatDuration(seconds: number) {
+  const total = Math.max(0, Math.floor(seconds))
+  if (total < 60) return `${total}秒`
+  const minutes = Math.floor(total / 60)
+  const remaining = total % 60
+  return remaining ? `${minutes}分${remaining}秒` : `${minutes}分`
+}
+
+function formatMessageTime(value: string) {
+  return messageTimeFormatter.format(new Date(value))
+}
+
+function messageTimeText(item: ConversationMessage) {
+  const timestamp = item.role === 'assistant' && item.taskFinishedAt
+    ? item.taskFinishedAt
+    : item.createdAt
+  const prefix = item.role === 'user' ? '发送' : item.taskFinishedAt ? '完成' : '创建'
+  if (!item.taskStartedAt || !item.taskFinishedAt) return `${prefix} ${formatMessageTime(timestamp)}`
+  const duration = Math.max(
+    0,
+    Math.round((new Date(item.taskFinishedAt).getTime() - new Date(item.taskStartedAt).getTime()) / 1000),
+  )
+  return `${prefix} ${formatMessageTime(timestamp)} · 耗时 ${formatDuration(duration)}`
+}
+
+async function loadConversations() {
+  conversations.value = await api<Conversation[]>('/api/v1/conversations')
+}
+
+async function loadProviders() {
+  providers.value = await api<Provider[]>('/api/v1/providers')
+}
+
+async function loadModels() {
+  models.value = await api<ImageModel[]>('/api/v1/models?includeDiscovered=true')
+}
+
+async function loadTemplates() {
+  templates.value = await api<PromptTemplate[]>('/api/v1/prompt-templates?templateType=style')
+}
+
+async function selectConversation(id: string) {
+  activeConversation.value = await api<ConversationDetail>(`/api/v1/conversations/${id}`)
+  activeLeafId.value = latestMessageId(activeConversation.value.messages)
+  composerParentId.value = null
+  providerId.value = activeConversation.value.defaultProviderId ?? providerId.value
+  modelId.value = activeConversation.value.defaultModelId ?? modelId.value
+  await scrollBottom()
+}
+
+async function createConversation() {
+  const created = await api<Conversation>('/api/v1/conversations', {
+    method: 'POST',
+    body: JSON.stringify({
+      title: '新会话',
+      defaultProviderId: providerId.value,
+      defaultModelId: modelId.value,
+    }),
+  })
+  conversations.value.push(created)
+  await selectConversation(created.id)
+}
+
+function beginTitle(item: Conversation) {
+  editingTitle.value = item.id
+  titleDraft.value = item.title
+}
+
+async function saveTitle(item: Conversation) {
+  const title = titleDraft.value.trim()
+  if (!title) return
+  const updated = await api<Conversation>(`/api/v1/conversations/${item.id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ title }),
+  })
+  Object.assign(item, updated)
+  if (activeConversation.value?.id === item.id) activeConversation.value.title = title
+  editingTitle.value = null
+}
+
+async function dropConversation(targetIndex: number) {
+  if (draggedIndex.value === null || draggedIndex.value === targetIndex) return
+  const [moved] = conversations.value.splice(draggedIndex.value, 1)
+  if (!moved) return
+  conversations.value.splice(targetIndex, 0, moved)
+  draggedIndex.value = null
+  await api<void>('/api/v1/conversations/order', {
+    method: 'PUT',
+    body: JSON.stringify({ conversationIds: conversations.value.map((item) => item.id) }),
+  })
+}
+
+function appendFiles(selectedFiles: File[]) {
+  const supportedFiles = selectedFiles.filter((file) => supportedImageTypes.has(file.type))
+  if (supportedFiles.length !== selectedFiles.length) message.warning('仅支持 PNG、JPEG 和 WebP 图片')
+  files.value.push(...supportedFiles.map((file) => ({ file, previewUrl: URL.createObjectURL(file) })))
+  return supportedFiles.length
+}
+
+function chooseFiles(event: Event) {
+  const input = event.target as HTMLInputElement
+  appendFiles(Array.from(input.files ?? []))
+  input.value = ''
+}
+
+function pasteFiles(event: ClipboardEvent) {
+  const pastedImages = Array.from(event.clipboardData?.files ?? []).filter((file) => file.type.startsWith('image/'))
+  if (!pastedImages.length) return
+  event.preventDefault()
+  const addedCount = appendFiles(pastedImages)
+  if (addedCount) message.success(`已粘贴 ${addedCount} 张参考图`)
+}
+
+function removeFile(index: number) {
+  const [removed] = files.value.splice(index, 1)
+  if (removed) URL.revokeObjectURL(removed.previewUrl)
+}
+
+function openImagePreview(contentUrl: string, label: string, metadata: string) {
+  imagePreview.value = { contentUrl, label, metadata }
+  imagePreviewOpen.value = true
+}
+
+function imageDownloadName(id: string, mimeType: string) {
+  const extension = mimeType === 'image/jpeg' ? 'jpg' : mimeType === 'image/webp' ? 'webp' : 'png'
+  return `ai-image-studio-${id}.${extension}`
+}
+
+function updateParameterPanelBounds() {
+  viewportWidth.value = window.innerWidth
+  parameterPanelWidth.value = Math.min(parameterPanelWidth.value, parameterPanelMaxWidth.value)
+}
+
+function resizeParameterPanel(delta: number) {
+  parameterPanelWidth.value = Math.min(
+    parameterPanelMaxWidth.value,
+    Math.max(parameterPanelMinWidth, parameterPanelWidth.value + delta),
+  )
+}
+
+function startParameterResize(event: PointerEvent) {
+  if (viewportWidth.value <= 1220) return
+  event.preventDefault()
+  stopParameterResize?.()
+  const startX = event.clientX
+  const startWidth = parameterPanelWidth.value
+  const move = (moveEvent: PointerEvent) => {
+    parameterPanelWidth.value = Math.min(
+      parameterPanelMaxWidth.value,
+      Math.max(parameterPanelMinWidth, Math.round(startWidth + startX - moveEvent.clientX)),
+    )
+  }
+  const finish = () => {
+    window.removeEventListener('pointermove', move)
+    window.removeEventListener('pointerup', finish)
+    document.body.classList.remove('parameter-panel-resizing')
+    resizingParameterPanel.value = false
+    stopParameterResize = null
+  }
+  resizingParameterPanel.value = true
+  document.body.classList.add('parameter-panel-resizing')
+  window.addEventListener('pointermove', move)
+  window.addEventListener('pointerup', finish)
+  stopParameterResize = finish
+}
+
+async function send() {
+  const content = prompt.value.trim()
+  if (!content || sending.value) return
+  await submitMessage({
+    content,
+    parentMessageId: currentBranchParentId.value,
+    inputAssetIds: [],
+    useComposerFiles: true,
+  })
+}
+
+interface MessageSubmission {
+  content: string
+  parentMessageId: string | null
+  inputAssetIds: string[]
+  useComposerFiles: boolean
+}
+
+async function submitMessage(submission: MessageSubmission) {
+  if (!providerId.value || !modelId.value) return message.error('请先配置并选择可用模型')
+  const knownMessageIds = new Set(conversationMessages.value.map((item) => item.id))
+  const composerFiles = submission.useComposerFiles ? [...files.value] : []
+  const uploadedAssetIds: string[] = []
+  sending.value = true
+  startTaskTimer()
+  activeTaskId.value = null
+  cancelling.value = false
+  retryingTaskId.value = null
+  taskStage.value = '正在创建任务'
+  partialPreview.value = null
+  try {
+    if (!activeConversation.value) await createConversation()
+    pendingUserMessage.value = {
+      conversationId: activeConversation.value!.id,
+      content: submission.content,
+      createdAt: new Date().toISOString(),
+    }
+    await scrollBottom()
+    const inputAssetIds = [...submission.inputAssetIds]
+    if (submission.useComposerFiles) {
+      for (const attachment of files.value) {
+        const body = new FormData()
+        body.append('file', attachment.file)
+        const asset = await api<ImageAsset>('/api/v1/image-assets/uploads', { method: 'POST', body })
+        inputAssetIds.push(asset.id)
+        uploadedAssetIds.push(asset.id)
+      }
+      prompt.value = ''
+      files.value = []
+      if (fileInput.value) fileInput.value.value = ''
+    }
+    await streamPost(
+      `/api/v1/conversations/${activeConversation.value!.id}/messages`,
+      {
+        content: submission.content,
+        parentMessageId: submission.parentMessageId,
+        providerId: providerId.value,
+        modelId: modelId.value,
+        parameters: cleanParameters(inputAssetIds.length > 0),
+        inputAssetIds,
+        stylePrompt: currentTemplate.value?.prompt,
+        stream: true,
+      },
+      handleTaskEvent,
+    )
+    pendingUserMessage.value = null
+    await selectConversation(activeConversation.value!.id)
+    await loadConversations()
+  } catch (error) {
+    await Promise.allSettled(
+      uploadedAssetIds.map((id) => api<void>(`/api/v1/image-assets/${id}`, { method: 'DELETE' })),
+    )
+    let submissionPersisted = Boolean(activeTaskId.value)
+    if (activeConversation.value) {
+      try {
+        await selectConversation(activeConversation.value.id)
+        await loadConversations()
+        submissionPersisted ||= conversationMessages.value.some(
+          (item) =>
+            !knownMessageIds.has(item.id) &&
+            item.role === 'user' &&
+            item.content?.trim() === submission.content,
+        )
+      } catch {
+        // Keep the original request locally when the server state cannot be refreshed.
+      }
+    }
+    if (submission.useComposerFiles && !submissionPersisted) {
+      if (!prompt.value.trim()) prompt.value = submission.content
+      if (!files.value.length) files.value = composerFiles
+    }
+    message.error(error instanceof Error ? error.message : '生成失败')
+  } finally {
+    const activePreviewUrls = new Set(files.value.map((attachment) => attachment.previewUrl))
+    composerFiles.forEach((attachment) => {
+      if (!activePreviewUrls.has(attachment.previewUrl)) URL.revokeObjectURL(attachment.previewUrl)
+    })
+    stopTaskTimer()
+    sending.value = false
+    activeTaskId.value = null
+    cancelling.value = false
+    partialPreview.value = null
+    pendingUserMessage.value = null
+    setTimeout(() => (taskStage.value = ''), 1800)
+  }
+}
+
+function handleTaskEvent(event: TaskEvent) {
+  if (event.type === 'stream.reconnecting') taskStage.value = '正在恢复连接'
+  if (event.type === 'stream.polling') taskStage.value = '正在确认任务状态'
+  if (event.type === 'task.created') {
+    taskStage.value = '等待生成资源'
+    if (typeof event.data.taskId === 'string') activeTaskId.value = event.data.taskId
+  }
+  if (event.type === 'task.progress') taskStage.value = stageText(String(event.data.stage ?? ''))
+  if (event.type === 'image.partial' && typeof event.data.contentUrl === 'string') {
+    partialPreview.value = {
+      contentUrl: event.data.contentUrl,
+      label: `流式局部预览 ${Number(event.data.partialIndex ?? 0) + 1}`,
+    }
+    taskStage.value = '模型正在细化图片'
+    void scrollBottom()
+  }
+  if (event.type === 'image.completed') {
+    taskStage.value = '正在保存原图'
+    const asset = event.data.asset
+    if (asset && typeof asset === 'object' && 'contentUrl' in asset && typeof asset.contentUrl === 'string') {
+      partialPreview.value = { contentUrl: asset.contentUrl, label: '最终图片' }
+    }
+  }
+  if (event.type === 'task.completed') taskStage.value = '已完成'
+  if (event.type === 'task.failed') taskStage.value = '生成失败'
+  if (event.type === 'task.cancelled') {
+    taskStage.value = '已取消'
+    partialPreview.value = null
+  }
+}
+
+async function cancelActiveTask() {
+  if (!activeTaskId.value || cancelling.value) return
+  cancelling.value = true
+  try {
+    await api<void>(`/api/v1/tasks/${activeTaskId.value}/cancel`, { method: 'POST' })
+    taskStage.value = '正在取消'
+    partialPreview.value = null
+  } catch (error) {
+    cancelling.value = false
+    message.error(error instanceof Error ? error.message : '取消任务失败')
+  }
+}
+
+async function retryTask(item: ConversationMessage) {
+  if (!item.taskId || sending.value) return
+  sending.value = true
+  startTaskTimer()
+  retryingTaskId.value = item.taskId
+  activeTaskId.value = item.taskId
+  cancelling.value = false
+  taskStage.value = '正在重新生成'
+  partialPreview.value = null
+  try {
+    const result = await api<{ taskId: string; lastEventId: number }>(
+      `/api/v1/tasks/${item.taskId}/retry`,
+      { method: 'POST' },
+    )
+    item.status = 'streaming'
+    item.content = null
+    item.taskErrorCode = null
+    item.taskErrorMessage = null
+    item.taskRetryCount = (item.taskRetryCount ?? 0) + 1
+    activeTaskId.value = result.taskId
+    await streamTask(result.taskId, handleTaskEvent, {
+      initialLastEventId: String(result.lastEventId),
+    })
+    await selectConversation(activeConversation.value!.id)
+    await loadConversations()
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '重试任务失败')
+    if (activeConversation.value) {
+      await selectConversation(activeConversation.value.id).catch(() => undefined)
+    }
+  } finally {
+    stopTaskTimer()
+    sending.value = false
+    retryingTaskId.value = null
+    activeTaskId.value = null
+    cancelling.value = false
+    partialPreview.value = null
+    setTimeout(() => (taskStage.value = ''), 1800)
+  }
+}
+
+function messageBranch(item: ConversationMessage) {
+  return branchPosition(conversationMessages.value, item)
+}
+
+async function selectSiblingBranch(item: ConversationMessage, offset: number) {
+  const branch = messageBranch(item)
+  const sibling = branch.siblings[branch.index + offset]
+  if (!sibling) return
+  activeLeafId.value = latestDescendantId(conversationMessages.value, sibling.id)
+  composerParentId.value = null
+  await scrollBottom()
+}
+
+async function continueFrom(item: ConversationMessage) {
+  if (item.role !== 'assistant') return
+  activeLeafId.value = item.id
+  composerParentId.value = item.id
+  await nextTick()
+  composerInput.value?.focus()
+}
+
+async function resetComposerBranch() {
+  activeLeafId.value = latestMessageId(conversationMessages.value)
+  composerParentId.value = null
+  await scrollBottom()
+}
+
+function canRegenerate(item: ConversationMessage) {
+  if (item.role !== 'assistant' || item.status === 'streaming') return false
+  const request = conversationMessages.value.find((candidate) => candidate.id === item.parentMessageId)
+  return request?.role === 'user' && Boolean(request.content?.trim())
+}
+
+async function regenerate(item: ConversationMessage) {
+  if (sending.value) return
+  const request = conversationMessages.value.find((candidate) => candidate.id === item.parentMessageId)
+  const content = request?.content?.trim()
+  if (request?.role !== 'user' || !content) return message.error('找不到这次生成对应的用户消息')
+  composerParentId.value = null
+  await submitMessage({
+    content,
+    parentMessageId: request.parentMessageId,
+    inputAssetIds: request.assets.map((asset) => asset.id),
+    useComposerFiles: false,
+  })
+}
+
+function cleanParameters(hasInputImages = files.value.length > 0) {
+  return Object.fromEntries(
+    Object.entries(parameters).filter(([name, value]) => {
+      const definition = schema.value[name]
+      return (
+        definition !== undefined &&
+        isParameterVisible(name, definition, hasInputImages) &&
+        value !== '' &&
+        value !== null &&
+        value !== undefined
+      )
+    }),
+  )
+}
+
+function isParameterVisible(
+  _name: string,
+  definition: ParameterDefinition,
+  hasInputImages = files.value.length > 0,
+) {
+  if (definition.supported === false) return false
+  const operation = hasInputImages ? 'edit' : 'generation'
+  if (definition.operations && !definition.operations.includes(operation)) return false
+  return Object.entries(definition.visible_when ?? {}).every(([dependency, expected]) => {
+    const actual = dependency === 'stream' ? true : parameters[dependency] ?? schema.value[dependency]?.default
+    return Array.isArray(expected) ? expected.includes(actual) : actual === expected
+  })
+}
+
+function enumOptions(name: string, fallback: string[]) {
+  const options = schema.value[name]?.options ?? fallback
+  return options.map((value) => ({ label: value === 'auto' ? 'Auto（默认）' : value, value }))
+}
+
+function parameterOptions(definition: ParameterDefinition) {
+  return (definition.options ?? []).map((value) => ({
+    label: value === 'auto' ? 'Auto（默认）' : value,
+    value,
+  }))
+}
+
+function selectValue(value: ParameterValue | undefined): string | number | null {
+  return typeof value === 'string' || typeof value === 'number' ? value : null
+}
+
+function numberValue(value: ParameterValue | undefined): number | null {
+  return typeof value === 'number' ? value : null
+}
+
+function booleanValue(value: ParameterValue | undefined): boolean {
+  return value === true
+}
+
+function stringValue(value: ParameterValue | undefined): string {
+  return typeof value === 'string' ? value : ''
+}
+
+function setParameter(name: string, value: ParameterValue) {
+  parameters[name] = value
+  if (!modelId.value) return
+  const memory = readParameterMemory()
+  memory[modelId.value] = Object.fromEntries(
+    Object.entries(parameters).filter(
+      ([key, currentValue]) => schema.value[key] && acceptsParameterValue(schema.value[key]!, currentValue),
+    ),
+  )
+  try {
+    localStorage.setItem(parameterMemoryKey, JSON.stringify(memory))
+  } catch {
+    // Keep generation usable when browser storage is unavailable.
+  }
+}
+
+function readParameterMemory(): ParameterMemory {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(parameterMemoryKey) ?? '{}')
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as ParameterMemory
+      : {}
+  } catch {
+    return {}
+  }
+}
+
+function acceptsParameterValue(definition: ParameterDefinition, value: ParameterValue) {
+  if (definition.type === 'boolean') return typeof value === 'boolean'
+  if (definition.type === 'string') return typeof value === 'string'
+  if (definition.type === 'enum') {
+    return typeof value === 'string' && (definition.allow_custom === true || definition.options?.includes(value) === true)
+  }
+  if (typeof value !== 'number' || !Number.isFinite(value)) return false
+  if (definition.type === 'integer' && !Number.isInteger(value)) return false
+  return (definition.min === undefined || value >= definition.min)
+    && (definition.max === undefined || value <= definition.max)
+}
+
+function parameterLabel(name: string) {
+  const labels: Record<string, string> = {
+    output_format: '输出格式',
+    output_compression: '输出压缩（JPEG/WebP）',
+    background: '背景模式',
+    moderation: '内容审核级别',
+    partial_images: '流式局部预览数量',
+    input_fidelity: '输入图片保真度',
+    response_format: '上游返回格式',
+    style: 'DALL·E 原生风格',
+    resolution: '原生分辨率',
+  }
+  return labels[name] ?? name.replace(/_/g, ' ')
+}
+
+function stageText(stage: string) {
+  const stages: Record<string, string> = {
+    retrying: '正在重新生成',
+    automatic_retry: '正在自动重试',
+    'provider.processing': '模型正在生成',
+    'provider.downloading': '正在接收生成结果',
+    'storage.validating': '正在校验图片',
+    'storage.persisting': '正在保存原图',
+  }
+  return stages[stage] ?? '正在处理'
+}
+
+function beginNewTemplate() {
+  editingTemplateId.value = null
+  templateTitle.value = ''
+  templatePrompt.value = ''
+}
+
+function editTemplate(template: PromptTemplate) {
+  if (!template.ownerId) return
+  editingTemplateId.value = template.id
+  templateTitle.value = template.title
+  templatePrompt.value = template.prompt
+}
+
+function openTemplateManager(template?: PromptTemplate) {
+  if (template?.ownerId) editTemplate(template)
+  else beginNewTemplate()
+  templateManagerOpen.value = true
+}
+
+async function saveTemplate() {
+  if (!templateTitle.value.trim() || !templatePrompt.value.trim()) return message.error('请填写模板名称和 Prompt')
+  if (editingTemplateId.value) {
+    await api(`/api/v1/prompt-templates/${editingTemplateId.value}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ title: templateTitle.value, prompt: templatePrompt.value }),
+    })
+  } else {
+    await api('/api/v1/prompt-templates', {
+      method: 'POST',
+      body: JSON.stringify({ templateType: 'style', title: templateTitle.value, prompt: templatePrompt.value }),
+    })
+  }
+  await loadTemplates()
+  templateManagerOpen.value = false
+  message.success('模板已保存')
+}
+
+async function scrollBottom() {
+  await nextTick()
+  timeline.value?.scrollTo({ top: timeline.value.scrollHeight, behavior: 'smooth' })
+}
+</script>
+
+<template>
+  <div class="studio-shell">
+    <aside class="conversation-rail">
+      <div class="rail-heading">
+        <div><span class="eyebrow muted">WORKSPACE</span><h2>创作会话</h2></div>
+        <button class="icon-button" title="新建会话" @click="createConversation">＋</button>
+      </div>
+      <n-input v-model:value="conversationSearch" clearable placeholder="搜索会话标题" size="small" />
+      <div class="conversation-list">
+        <article
+          v-for="(item, index) in filteredConversations"
+          :key="item.id"
+          class="conversation-item"
+          :class="{ active: item.id === activeConversation?.id }"
+          :draggable="!conversationSearch.trim()"
+          @dragstart="draggedIndex = index"
+          @dragover.prevent
+          @drop="dropConversation(index)"
+          @click="selectConversation(item.id)"
+        >
+          <span class="drag-handle">⠿</span>
+          <div v-if="editingTitle === item.id" class="title-editor" @click.stop>
+            <input v-model="titleDraft" autofocus @keyup.enter="saveTitle(item)" @keyup.esc="editingTitle = null" @blur="saveTitle(item)" />
+          </div>
+          <div v-else class="conversation-copy">
+            <strong>{{ item.title }}</strong>
+            <small>{{ new Date(item.lastMessageAt).toLocaleString() }}</small>
+          </div>
+          <button class="edit-title" title="修改标题" @click.stop="beginTitle(item)">✎</button>
+        </article>
+        <div v-if="!filteredConversations.length" class="empty-compact">
+          {{ conversations.length ? '没有匹配的会话标题。' : '还没有会话，点击右上角开始。' }}
+        </div>
+      </div>
+    </aside>
+
+    <section class="studio-main">
+      <header class="studio-header">
+        <div><span class="eyebrow muted">CREATIVE SESSION</span><h1>{{ activeConversation?.title || '开始新的创作' }}</h1></div>
+        <div class="task-status-actions">
+          <span v-if="taskStage" class="task-pill" :class="{ active: sending && !cancelling }">{{ taskStatusWithElapsed }}</span>
+          <button
+            v-if="sending && activeTaskId"
+            type="button"
+            class="cancel-task-button"
+            :disabled="cancelling"
+            @click="cancelActiveTask"
+          >{{ cancelling ? '取消中' : '取消生成' }}</button>
+        </div>
+      </header>
+      <div ref="timeline" class="message-timeline">
+        <div v-if="!visibleMessages.length && !visiblePendingUserMessage" class="studio-empty">
+          <div class="empty-art">✦</div>
+          <h2>描述你脑海中的画面</h2>
+          <p>可以连续追问“保持人物，把背景换成雨夜”。相关历史图片会由系统按当前会话自动选择。</p>
+        </div>
+        <article v-for="item in visibleMessages" :key="item.id" class="message-row" :class="item.role">
+          <div class="message-avatar">{{ item.role === 'user' ? '你' : 'AI' }}</div>
+          <div class="message-body">
+            <p v-if="item.content && item.status !== 'failed'">{{ item.content }}</p>
+            <div v-if="item.status === 'failed'" class="task-error">
+              <div>
+                <strong>生成失败</strong>
+                <span>{{ item.taskErrorMessage || item.content || '任务执行失败，请稍后重试。' }}</span>
+              </div>
+              <button
+                v-if="item.taskId"
+                type="button"
+                :disabled="sending"
+                @click="retryTask(item)"
+              >{{ retryingTaskId === item.taskId ? '重试中' : '重试' }}</button>
+            </div>
+            <div v-if="item.status === 'streaming'" class="streaming-line"><i></i><span>{{ taskStatusWithElapsed }}</span></div>
+            <div v-if="item.assets.length" class="message-images">
+              <figure v-for="asset in item.assets" :key="asset.id" class="message-image-item">
+                <button
+                  type="button"
+                  class="message-image-button"
+                  aria-label="放大生成图片"
+                  @click="openImagePreview(asset.contentUrl, '生成图片', `${asset.width} × ${asset.height} · ${asset.mimeType}`)"
+                >
+                  <img :src="asset.contentUrl" :alt="`生成图片 ${asset.id}`" />
+                </button>
+                <figcaption class="message-image-meta">
+                  <span>{{ asset.width }} × {{ asset.height }} · {{ asset.mimeType }}</span>
+                  <a
+                    class="image-download-button"
+                    :href="asset.contentUrl"
+                    :download="imageDownloadName(asset.id, asset.mimeType)"
+                  >↓ 下载原图</a>
+                </figcaption>
+              </figure>
+            </div>
+            <time class="message-time" :datetime="item.taskFinishedAt || item.createdAt">{{ messageTimeText(item) }}</time>
+            <div v-if="messageBranch(item).total > 1 || item.role === 'assistant'" class="message-footer">
+              <div v-if="messageBranch(item).total > 1" class="branch-switcher" aria-label="消息分支切换">
+                <button
+                  type="button"
+                  aria-label="上一个分支"
+                  :disabled="messageBranch(item).index === 0"
+                  @click="selectSiblingBranch(item, -1)"
+                >‹</button>
+                <span>分支 {{ messageBranch(item).index + 1 }} / {{ messageBranch(item).total }}</span>
+                <button
+                  type="button"
+                  aria-label="下一个分支"
+                  :disabled="messageBranch(item).index === messageBranch(item).total - 1"
+                  @click="selectSiblingBranch(item, 1)"
+                >›</button>
+              </div>
+              <div v-if="item.role === 'assistant'" class="message-actions">
+                <button
+                  v-if="item.id !== visibleLeafId && item.status !== 'streaming'"
+                  type="button"
+                  :disabled="sending"
+                  @click="continueFrom(item)"
+                >从这里继续</button>
+                <button
+                  v-if="canRegenerate(item)"
+                  type="button"
+                  :disabled="sending"
+                  @click="regenerate(item)"
+                >重新生成</button>
+              </div>
+            </div>
+          </div>
+        </article>
+        <article v-if="visiblePendingUserMessage" class="message-row user pending-message">
+          <div class="message-avatar">你</div>
+          <div class="message-body">
+            <p>{{ visiblePendingUserMessage.content }}</p>
+            <time class="message-time" :datetime="visiblePendingUserMessage.createdAt">
+              发送 {{ formatMessageTime(visiblePendingUserMessage.createdAt) }}
+            </time>
+          </div>
+        </article>
+        <article v-if="sending && !retryingTaskId && visiblePendingUserMessage" class="message-row assistant pending-message">
+          <div class="message-avatar">AI</div>
+          <div class="message-body">
+            <div class="streaming-line"><i></i><span>{{ taskStatusWithElapsed }}</span></div>
+            <div v-if="partialPreview" class="message-images">
+              <button
+                type="button"
+                class="message-image-button"
+                :aria-label="`放大${partialPreview.label}`"
+                @click="openImagePreview(partialPreview.contentUrl, partialPreview.label, '最终原图仍在生成')"
+              >
+                <img :src="partialPreview.contentUrl" :alt="partialPreview.label" />
+                <span>{{ partialPreview.label }} · 最终原图仍在生成</span>
+              </button>
+            </div>
+          </div>
+        </article>
+      </div>
+      <footer class="composer-wrap">
+        <div v-if="composerAnchor" class="branch-anchor">
+          <span><strong>从这里继续</strong> · {{ composerAnchor.content || '这条图片结果' }}</span>
+          <button type="button" aria-label="取消从这里继续" @click="resetComposerBranch">取消</button>
+        </div>
+        <div class="composer">
+          <div v-if="files.length" class="composer-attachments" aria-label="待发送参考图">
+            <figure
+              v-for="(attachment, index) in files"
+              :key="attachment.previewUrl"
+              class="composer-attachment"
+              :title="attachment.file.name"
+            >
+              <img :src="attachment.previewUrl" :alt="`参考图 ${attachment.file.name}`" />
+              <button type="button" :aria-label="`移除参考图 ${attachment.file.name}`" @click="removeFile(index)">×</button>
+            </figure>
+          </div>
+          <textarea ref="composerInput" v-model="prompt" rows="2" placeholder="继续描述你的画面，或基于上一轮提出修改…" @paste="pasteFiles" @keydown.ctrl.enter.prevent="send"></textarea>
+          <div class="composer-actions">
+            <label class="upload-button">＋ 参考图<input ref="fileInput" type="file" accept="image/png,image/jpeg,image/webp" multiple @change="chooseFiles" /></label>
+            <span>Ctrl + Enter 发送</span>
+            <button class="send-button" :disabled="sending || !prompt.trim()" @click="send">{{ sending ? '生成中' : '生成' }} <b>↗</b></button>
+          </div>
+        </div>
+      </footer>
+    </section>
+
+    <aside class="parameter-panel" :class="{ resizing: resizingParameterPanel }">
+      <div
+        class="parameter-resize-handle"
+        role="separator"
+        aria-label="调整生成参数栏宽度"
+        aria-orientation="vertical"
+        :aria-valuemin="parameterPanelMinWidth"
+        :aria-valuemax="parameterPanelMaxWidth"
+        :aria-valuenow="parameterPanelWidth"
+        tabindex="0"
+        title="拖动调整生成参数栏宽度"
+        @pointerdown="startParameterResize"
+        @keydown.left.prevent="resizeParameterPanel(40)"
+        @keydown.right.prevent="resizeParameterPanel(-40)"
+      ><span></span></div>
+      <header><div><span class="eyebrow muted">PARAMETERS</span><h2>生成参数</h2></div></header>
+      <div class="parameter-scroll">
+        <section class="parameter-group model-parameters">
+          <h3>模型</h3>
+          <label>Provider<n-select v-model:value="providerId" :options="providerOptions" placeholder="选择 Provider" /></label>
+          <label>生图模型<n-select v-model:value="modelId" :options="modelOptions" placeholder="选择已验证模型" /></label>
+        </section>
+        <section class="parameter-group base-parameters">
+          <h3>基础参数</h3>
+          <label>宽高比<n-select :value="selectValue(parameters.aspect_ratio)" :options="aspectRatioOptions" @update:value="value => setParameter('aspect_ratio', value)" /></label>
+          <label v-if="schema.size">分辨率<n-select :value="selectValue(parameters.size)" :options="sizeOptions" :tag="schema.size.allow_custom === true" filterable @update:value="value => setParameter('size', value)" /></label>
+          <label v-if="schema.quality">质量<n-select :value="selectValue(parameters.quality)" :options="qualityOptions" @update:value="value => setParameter('quality', value)" /></label>
+          <label v-if="schema.n">生成数量<n-input-number :value="numberValue(parameters.n)" :min="schema.n.min ?? 1" :max="schema.n.max ?? 10" @update:value="value => setParameter('n', value)" /></label>
+          <div class="parameter-field"><span>创作风格</span>
+            <div class="inline-control"><n-select v-model:value="styleId" clearable :options="styleOptions" /><button @click="openTemplateManager(currentTemplate ?? undefined)">管理模板</button></div>
+          </div>
+        </section>
+        <details class="parameter-group advanced" open>
+          <summary>高级设置 <span>{{ advancedParameters.length }} 项</span></summary>
+          <div class="advanced-parameter-grid">
+            <div v-if="!advancedParameters.length" class="schema-empty">当前模型没有声明更多高级参数。</div>
+            <label v-for="([name, definition]) in advancedParameters" :key="name">
+              {{ parameterLabel(name) }}
+              <n-select v-if="definition.type === 'enum'" :value="selectValue(parameters[name])" :options="parameterOptions(definition)" @update:value="value => setParameter(name, value)" />
+              <n-input-number v-else-if="definition.type === 'integer' || definition.type === 'number'" :value="numberValue(parameters[name])" :min="definition.min" :max="definition.max" :step="definition.step" @update:value="value => setParameter(name, value)" />
+              <n-switch v-else-if="definition.type === 'boolean'" :value="booleanValue(parameters[name])" @update:value="value => setParameter(name, value)" />
+              <n-input v-else :value="stringValue(parameters[name])" @update:value="value => setParameter(name, value)" />
+            </label>
+          </div>
+        </details>
+      </div>
+    </aside>
+  </div>
+
+  <n-modal v-model:show="templateManagerOpen" preset="card" title="管理创作风格模板" class="dialog-card">
+    <div class="template-layout">
+      <div class="template-list">
+        <button :class="{ active: !editingTemplateId }" @click="beginNewTemplate">＋ 新建模板</button>
+        <button v-for="item in templates" :key="item.id" :class="{ active: editingTemplateId === item.id }" :disabled="!item.ownerId" @click="editTemplate(item)">
+          {{ item.title }} <small>{{ item.ownerId ? '我的模板' : '系统模板' }}</small>
+        </button>
+      </div>
+      <div class="form-stack">
+        <div class="template-editor-heading">
+          <strong>{{ editingTemplateId ? '编辑我的模板' : '新建模板' }}</strong>
+          <span>{{ editingTemplateId ? '修改后将覆盖当前模板。' : '填写名称和 Prompt，保存后即可在创作风格中选择。' }}</span>
+        </div>
+        <label>模板名称<n-input v-model:value="templateTitle" placeholder="例如：复古胶片" /></label>
+        <label>Prompt 文本<n-input v-model:value="templatePrompt" type="textarea" :rows="7" /></label>
+        <n-button type="primary" @click="saveTemplate">{{ editingTemplateId ? '保存修改' : '创建模板' }}</n-button>
+      </div>
+    </div>
+  </n-modal>
+
+  <n-modal v-model:show="imagePreviewOpen" :mask-closable="true">
+    <section v-if="imagePreview" class="image-lightbox" role="dialog" aria-modal="true" :aria-label="imagePreview.label">
+      <button class="image-lightbox-close" type="button" aria-label="关闭图片预览" @click="imagePreviewOpen = false">×</button>
+      <img :src="imagePreview.contentUrl" :alt="imagePreview.label" />
+      <footer>
+        <strong>{{ imagePreview.label }}</strong>
+        <span>{{ imagePreview.metadata }}</span>
+      </footer>
+    </section>
+  </n-modal>
+</template>
