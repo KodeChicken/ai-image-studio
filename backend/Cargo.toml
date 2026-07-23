@@ -28,7 +28,7 @@ cookie = "0.18"
 dotenvy = "0.15"
 futures-util = "0.3"
 hex = "0.4"
-hmac = "0.12"
+hmac = "0.13"
 http = "1"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 jsonwebtoken = "9"
