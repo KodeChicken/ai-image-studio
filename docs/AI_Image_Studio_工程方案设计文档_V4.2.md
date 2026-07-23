@@ -2,11 +2,11 @@
 
 ## 0. 当前实现状态
 
-截至 2026-07-22，仓库代码已落地本文主链能力：OpenAI Compatible、Gemini Image 与 Grok Image Adapter，动态模型发现和参数 Schema，多轮会话、图片编辑、默认 SSE、Local/S3 真实文件持久化、用户/管理员权限、Prompt 模板、Redis 可选队列与独立 Worker、自动重试、用量/成本统计、管理员运营日志，以及委托独立 Host Updater 的升级/回滚管理面。
+截至 2026-07-23，仓库代码已落地本文主链能力：OpenAI Compatible、Gemini Image 与 Grok Image Adapter，动态模型发现和参数 Schema，多轮会话、图片编辑、默认 SSE、Local/S3 真实文件持久化、用户/管理员权限、Prompt 模板、Redis 可选队列与独立 Worker、自动重试、用量/成本统计、管理员运营日志，以及委托 Compose 内置 Host Updater sidecar 的升级/回滚管理面。
 
 `TASK_EXECUTION_MODE=inline` 时由 API 进程内执行任务；`TASK_EXECUTION_MODE=redis` 时 API 只创建持久化任务并写入 Redis，独立 `worker` 消费队列，同时定时从 PostgreSQL 兜底领取遗漏任务。PostgreSQL 始终是任务与状态的事实来源，Redis 只承担派发与唤醒，不保存唯一业务状态。
 
-在线升级仍遵守本文安全边界：仓库已包含管理员页面、Manifest 兼容性检查、二次输密、操作审计，以及独立 `ai-image-studio-host-updater` 宿主机服务。Web 通过专用 Unix Socket 或回环地址提交带时间戳 HMAC 的请求；固定执行器负责镜像 Digest 校验、备份、迁移、候选健康检查、切换和失败恢复。`vMAJOR.MINOR.PATCH` Tag 会触发 GitHub Actions 构建并推送 GHCR 镜像、记录固定 Digest、生成 Release Manifest；执行器在旧服务仍运行时先按 Digest 拉取镜像，确认成品可用后才进入停写阶段。Web 容器只挂载专用 Updater Socket，不挂载 Docker Socket。隔离环境已跑通固定 Digest 镜像成功链、四类故障恢复，以及 Web → Unix Socket → Host Updater → 正式执行器 → 部署历史回写整链；生产启用前仍需使用生产数据副本、真实发布 Registry 补进程中断和不同版本回滚验收。
+在线升级仍遵守本文安全边界：仓库已包含管理员页面、Manifest 兼容性检查、二次输密、操作审计，以及默认随 Docker Compose 启动的独立 `updater` sidecar。Web 通过共享命名卷中的专用 Unix Socket 提交带时间戳 HMAC 的请求，内部 Token 首次启动自动生成；固定执行器负责镜像 Digest 校验、备份、迁移、候选健康检查、活动镜像别名切换和失败恢复。`vMAJOR.MINOR.PATCH` Tag 会触发 GitHub Actions 分别构建应用与 Updater 的 GHCR 镜像、记录固定 Digest 并生成 Release Manifest；执行器在旧服务仍运行时先按 Digest 拉取应用镜像，确认成品可用后才进入停写阶段。只有 Updater 挂载 Docker Socket，`app/worker` 均不挂载。升级状态持久化在 `data/updater`，宿主机以后普通执行 Compose 不会被旧 `.env` 回退版本。隔离环境已跑通固定 Digest 镜像成功链、四类故障恢复，以及 Web → Unix Socket → Host Updater → 正式执行器 → 部署历史回写整链；生产启用前仍需使用生产数据副本、真实发布 Registry 补进程中断和不同版本回滚验收。
 
 > 一个基于 **Vue 3 + TypeScript + Vite + Naive UI + Rust + Axum** 的自托管、多供应商 AI 图片生成平台。
 
@@ -2080,8 +2080,6 @@ services:
 ```env
 APP_NAME=AI Image Studio
 APP_ENV=production
-APP_VERSION=0.1.0
-APP_IMAGE_REFERENCE=ai-image-studio:local
 LISTEN_ADDR=0.0.0.0:3000
 STATIC_DIR=/app/static
 
@@ -2135,11 +2133,12 @@ RATE_LIMIT_SESSION_REQUESTS=180
 RATE_LIMIT_USER_REQUESTS=120
 
 UPDATE_CHANNEL=stable
-UPDATE_MANIFEST_URL=
+UPDATE_MANIFEST_URL=https://github.com/KodeChicken/ai-image-studio/releases/latest/download/release-manifest.json
+UPDATE_MANIFEST_TOKEN=
 HOST_UPDATER_URL=
 HOST_UPDATER_SOCKET=
 HOST_UPDATER_TOKEN=
-HOST_UPDATER_SOCKET_DIR=./data/updater
+HOST_UPDATER_TOKEN_FILE=
 KEEP_PREVIOUS_RELEASES=3
 
 ALLOW_CUSTOM_BASE_URL=true
@@ -2975,7 +2974,7 @@ services:
       retries: 10
 
   migrator:
-    image: ${APP_IMAGE}
+    image: ${AI_IMAGE_STUDIO_RUNTIME_IMAGE:-ai-image-studio:active}
     restart: "no"
     command: ["migrate"]
     env_file:
@@ -2985,7 +2984,7 @@ services:
         condition: service_healthy
 
   app:
-    image: ${APP_IMAGE}
+    image: ${AI_IMAGE_STUDIO_RUNTIME_IMAGE:-ai-image-studio:active}
     restart: unless-stopped
     command: ["serve"]
     env_file:
@@ -2998,14 +2997,16 @@ services:
       migrator:
         condition: service_completed_successfully
     volumes:
-      - ./data:/app/data
+      - ${AI_IMAGE_STUDIO_DATA_DIR:-./data}:/app/data
 ```
 
-`.env` 中使用明确版本，不把 `latest` 作为唯一部署依据：
+正式升级不要求逐版本修改 `.env`。Updater 按 Manifest 中的 Digest 拉取并验证镜像，成功后把目标镜像切换到稳定的本地活动别名：
 
-```env
-APP_IMAGE=ghcr.io/codechicken/ai-image-studio:v0.4.2
+```text
+ai-image-studio:active -> ghcr.io/kodechicken/ai-image-studio@sha256:...
 ```
+
+版本、Digest、Schema 与备份历史持久化在 `data/updater`；因此宿主机再次执行普通 `docker compose up -d` 不会读取旧版本变量并回退应用。
 
 ---
 
@@ -3018,9 +3019,9 @@ APP_IMAGE=ghcr.io/codechicken/ai-image-studio:v0.4.2
 ```text
 管理员页面
     ↓
-AI Image Studio API
-    ↓ Unix Socket / localhost
-Host Updater
+AI Image Studio API（无 Docker Socket）
+    ↓ 共享卷内 Unix Socket
+Compose Updater sidecar（唯一挂载 Docker Socket）
     ↓
 GitHub Releases + GHCR
     ↓
@@ -3040,9 +3041,10 @@ GitHub Releases + GHCR
 
 #### Host Updater
 
-建议作为宿主机 `systemd` 服务运行：
+默认作为 Docker Compose 中的独立 `updater` sidecar 运行，无需额外安装 systemd 服务：
 
 - 只监听本机 Unix Socket
+- 首次启动在共享命名卷自动生成内部 Token，Web 只读挂载该卷
 - 校验管理员身份和请求签名
 - 调用固定的更新脚本
 - 拉取指定版本镜像
@@ -3053,6 +3055,8 @@ GitHub Releases + GHCR
 - 替换应用容器并更新服务状态
 - 保存部署历史
 - 失败时自动恢复旧版本
+
+Updater 镜像内置 Docker CLI、Compose v2 和固定执行器；项目目录只读挂载，业务数据与升级状态写入 `data/`。执行器会从当前 `app` 容器 Mount 信息发现真实宿主机数据目录，避免在 sidecar 中把相对 `./data` 错误解析为 `/workspace/data`。
 
 不要把 `/var/run/docker.sock` 直接挂载进公开 Web 应用容器。获得 Docker Daemon 控制权限基本等价于获得宿主机高权限。
 
@@ -3071,6 +3075,8 @@ GHCR Container Image
 ```text
 ghcr.io/kodechicken/ai-image-studio:0.4.2
 ghcr.io/kodechicken/ai-image-studio:latest
+ghcr.io/kodechicken/ai-image-studio-updater:0.4.2
+ghcr.io/kodechicken/ai-image-studio-updater:latest
 ```
 
 部署记录同时保存镜像 Digest：
@@ -3090,6 +3096,8 @@ ghcr.io/kodechicken/ai-image-studio@sha256:...
   "version": "0.4.2",
   "image": "ghcr.io/kodechicken/ai-image-studio:0.4.2",
   "image_digest": "sha256:...",
+  "updater_image": "ghcr.io/kodechicken/ai-image-studio-updater:0.4.2",
+  "updater_image_digest": "sha256:...",
   "schema_target": 12,
   "schema_min_supported": 1,
   "schema_max_supported": 12,
@@ -3100,7 +3108,7 @@ ghcr.io/kodechicken/ai-image-studio@sha256:...
 }
 ```
 
-Release Manifest 下载文件以 snake_case 作为 Host Updater 的固定发布契约；Web 后端兼容读取历史 camelCase 文件，返回浏览器的管理 API 则继续序列化为 camelCase。内部 HTTPS Manifest 使用私有 CA 时，Web 配置 `HTTP_CA_CERT_FILE`，宿主机执行器还需通过系统信任库或 `CURL_CA_BUNDLE` 信任同一根 CA，不能关闭 TLS 校验。
+Release Manifest 下载文件以 snake_case 作为 Host Updater 的固定发布契约；Web 后端兼容读取历史 camelCase 文件，返回浏览器的管理 API 则继续序列化为 camelCase。私有 GitHub Release 通过一次性配置的 `UPDATE_MANIFEST_TOKEN` 读取；私有 GHCR 使用宿主机 `docker login ghcr.io` 的登录态。内部 HTTPS Manifest 使用私有 CA 时，Web 配置 `HTTP_CA_CERT_FILE`，Updater 容器还需挂载并通过 `CURL_CA_BUNDLE` 信任同一根 CA，不能关闭 TLS 校验。
 
 Updater 在升级前检查：
 

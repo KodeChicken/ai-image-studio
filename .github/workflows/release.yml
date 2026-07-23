@@ -65,13 +65,15 @@ jobs:
             exit 1
           fi
           image="ghcr.io/${GITHUB_REPOSITORY,,}"
-          printf 'version=%s\nimage=%s\n' "$version" "$image" >>"$GITHUB_OUTPUT"
+          printf 'version=%s\nimage=%s\nupdater_image=%s-updater\n' \
+            "$version" "$image" "$image" >>"$GITHUB_OUTPUT"
 
       - name: Build and push release image
         id: image
         uses: docker/build-push-action@v7
         with:
           context: .
+          target: runtime
           platforms: linux/amd64
           push: true
           tags: |
@@ -81,8 +83,29 @@ jobs:
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.version=${{ steps.release.outputs.version }}
+          build-args: |
+            APP_VERSION=${{ steps.release.outputs.version }}
+            APP_IMAGE_REFERENCE=${{ steps.release.outputs.image }}:${{ steps.release.outputs.version }}
           cache-from: type=gha,scope=release-amd64
           cache-to: type=gha,mode=max,scope=release-amd64
+
+      - name: Build and push Host Updater image
+        id: updater_image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: updater-runtime
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ steps.release.outputs.updater_image }}:${{ steps.release.outputs.version }}
+            ${{ steps.release.outputs.updater_image }}:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.release.outputs.version }}
+          cache-from: type=gha,scope=updater-release-amd64
+          cache-to: type=gha,mode=max,scope=updater-release-amd64
 
       - name: Generate release manifest
         shell: bash
@@ -90,6 +113,8 @@ jobs:
           VERSION: ${{ steps.release.outputs.version }}
           IMAGE: ${{ steps.release.outputs.image }}
           DIGEST: ${{ steps.image.outputs.digest }}
+          UPDATER_IMAGE: ${{ steps.release.outputs.updater_image }}
+          UPDATER_DIGEST: ${{ steps.updater_image.outputs.digest }}
         run: |
           set -Eeuo pipefail
           install -d release-assets
@@ -111,6 +136,8 @@ jobs:
             --arg version "$VERSION" \
             --arg image "$IMAGE:$VERSION" \
             --arg image_digest "$DIGEST" \
+            --arg updater_image "$UPDATER_IMAGE:$VERSION" \
+            --arg updater_image_digest "$UPDATER_DIGEST" \
             --argjson schema_target "$schema_target" \
             --arg rollback_compatible_to "$rollback_compatible_to" \
             --arg release_notes "https://github.com/$GITHUB_REPOSITORY/releases/tag/$GITHUB_REF_NAME" \
@@ -118,6 +145,8 @@ jobs:
               version: $version,
               image: $image,
               image_digest: $image_digest,
+              updater_image: $updater_image,
+              updater_image_digest: $updater_image_digest,
               schema_target: $schema_target,
               schema_min_supported: 1,
               schema_max_supported: $schema_target,
@@ -132,6 +161,8 @@ jobs:
             (.version | type == "string") and
             (.image | type == "string") and
             (.image_digest | test("^sha256:[0-9a-f]{64}$")) and
+            (.updater_image | type == "string") and
+            (.updater_image_digest | test("^sha256:[0-9a-f]{64}$")) and
             (.schema_target | type == "number" and . >= 1) and
             (.schema_min_supported == 1) and
             (.schema_max_supported == .schema_target) and

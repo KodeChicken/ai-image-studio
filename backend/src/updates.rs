@@ -385,9 +385,11 @@ async fn fetch_manifest(state: &AppState) -> AppResult<ReleaseManifest> {
             "UPDATE_MANIFEST_URL must use HTTPS and contain no credentials".to_owned(),
         ));
     }
-    let response = state
-        .http_client
-        .get(url)
+    let mut request = state.http_client.get(url);
+    if let Some(token) = &state.settings.update_manifest_token {
+        request = request.bearer_auth(token.expose_secret());
+    }
+    let response = request
         .send()
         .await
         .map_err(|error| AppError::Upstream(error.to_string()))?;

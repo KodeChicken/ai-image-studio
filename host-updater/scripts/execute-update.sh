@@ -15,6 +15,8 @@ BACKUP_COMPLETE=false
 MIGRATION_STARTED=false
 CANDIDATE_NAME=""
 BACKUP_DIR=""
+PREVIOUS_ACTIVE_IMAGE_ID=""
+APP_DATA_DOCKER_PATH=""
 
 fail() {
   printf 'Host Updater: %s\n' "$*" >&2
@@ -49,9 +51,15 @@ if [[ -n "${UPDATER_TOOL_DIR:-}" ]]; then
   export PATH
 fi
 
+COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-ai-image-studio}
+ACTIVE_APP_IMAGE=${ACTIVE_APP_IMAGE:-${INITIAL_APP_IMAGE:-ai-image-studio:active}}
+USE_ACTIVE_IMAGE_ALIAS=${USE_ACTIVE_IMAGE_ALIAS:-false}
+LOCAL_STORAGE_DOCKER_PATH=${LOCAL_STORAGE_DOCKER_PATH:-${LOCAL_STORAGE_PATH:-}}
+
 required=(
   APP_DIR COMPOSE_FILE BASE_ENV_FILE APP_ENV_FILE RELEASE_ENV_FILE STATE_ROOT
-  BACKUP_ROOT LOCAL_STORAGE_PATH STORAGE_DRIVER UPDATE_MANIFEST_URL
+  BACKUP_ROOT LOCAL_STORAGE_PATH LOCAL_STORAGE_DOCKER_PATH STORAGE_DRIVER UPDATE_MANIFEST_URL
+  COMPOSE_PROJECT_NAME ACTIVE_APP_IMAGE
   INITIAL_APP_IMAGE INITIAL_APP_VERSION INITIAL_APP_DIGEST
   INITIAL_SCHEMA_MIN_SUPPORTED INITIAL_SCHEMA_MAX_SUPPORTED
   POSTGRES_USER POSTGRES_DB PUBLIC_HEALTH_URL CANDIDATE_PORT KEEP_PREVIOUS_RELEASES
@@ -83,22 +91,58 @@ STATE_ROOT=$(safe_absolute_path "$STATE_ROOT")
 BACKUP_ROOT=$(safe_absolute_path "$BACKUP_ROOT")
 LOCAL_STORAGE_PATH=$(safe_absolute_path "$LOCAL_STORAGE_PATH")
 
-[[ -d "$APP_DIR" && -f "$COMPOSE_FILE" && -f "$BASE_ENV_FILE" && -f "$APP_ENV_FILE" ]] \
-  || fail "application directory, Compose file, and environment files must exist"
+[[ -d "$APP_DIR" && -f "$COMPOSE_FILE" && -f "$BASE_ENV_FILE" ]] \
+  || fail "application directory, Compose file, and base environment file must exist"
 [[ "$STORAGE_DRIVER" == local || "$STORAGE_DRIVER" == s3 ]] || fail "STORAGE_DRIVER must be local or s3"
+[[ "$USE_ACTIVE_IMAGE_ALIAS" == true || "$USE_ACTIVE_IMAGE_ALIAS" == false ]] \
+  || fail "USE_ACTIVE_IMAGE_ALIAS must be true or false"
 [[ "$UPDATE_MANIFEST_URL" == https://* ]] || fail "UPDATE_MANIFEST_URL must use HTTPS"
-[[ "$CANDIDATE_PORT" =~ ^[0-9]+$ && "$CANDIDATE_PORT" -ge 1024 && "$CANDIDATE_PORT" -le 65535 ]] \
-  || fail "CANDIDATE_PORT must be between 1024 and 65535"
+CANDIDATE_USE_NETWORK_DNS=${CANDIDATE_USE_NETWORK_DNS:-false}
+[[ "$CANDIDATE_USE_NETWORK_DNS" == true || "$CANDIDATE_USE_NETWORK_DNS" == false ]] \
+  || fail "CANDIDATE_USE_NETWORK_DNS must be true or false"
+if [[ "$CANDIDATE_USE_NETWORK_DNS" == false ]]; then
+  [[ "$CANDIDATE_PORT" =~ ^[0-9]+$ && "$CANDIDATE_PORT" -ge 1024 && "$CANDIDATE_PORT" -le 65535 ]] \
+    || fail "CANDIDATE_PORT must be between 1024 and 65535"
+fi
 [[ "$KEEP_PREVIOUS_RELEASES" =~ ^[1-3]$ ]] || fail "KEEP_PREVIOUS_RELEASES must be between 1 and 3"
 [[ "$MIN_FREE_BYTES" =~ ^[0-9]+$ ]] || fail "MIN_FREE_BYTES must be an integer"
-[[ "$INITIAL_APP_VERSION" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]] \
+[[ "$INITIAL_APP_VERSION" == auto || "$INITIAL_APP_VERSION" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]] \
   || fail "INITIAL_APP_VERSION is invalid"
-[[ "$INITIAL_APP_DIGEST" =~ ^sha256:[0-9a-fA-F]{64}$ ]] || fail "INITIAL_APP_DIGEST is invalid"
+[[ "$INITIAL_APP_DIGEST" == auto || "$INITIAL_APP_DIGEST" =~ ^sha256:[0-9a-fA-F]{64}$ ]] \
+  || fail "INITIAL_APP_DIGEST is invalid"
 [[ "$INITIAL_SCHEMA_MIN_SUPPORTED" =~ ^[0-9]+$ && "$INITIAL_SCHEMA_MAX_SUPPORTED" =~ ^[0-9]+$ ]] \
   || fail "initial schema compatibility bounds must be non-negative integers"
 
 install -d -m 700 -- "$STATE_ROOT" "$STATE_ROOT/releases" "$BACKUP_ROOT"
 [[ -d "$LOCAL_STORAGE_PATH" ]] || fail "LOCAL_STORAGE_PATH must be an existing directory"
+
+if [[ "$LOCAL_STORAGE_DOCKER_PATH" == auto ]]; then
+  APP_CONTAINER=$(docker ps \
+    --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME" \
+    --filter 'label=com.docker.compose.service=app' \
+    --format '{{.ID}}' | head -n1)
+  [[ -n "$APP_CONTAINER" ]] || fail "running Compose app container was not found"
+  APP_DATA_DOCKER_PATH=$(docker inspect --format \
+    '{{range .Mounts}}{{if eq .Destination "/app/data"}}{{.Source}}{{end}}{{end}}' \
+    "$APP_CONTAINER")
+  APP_DATA_DOCKER_PATH=$(safe_absolute_path "$APP_DATA_DOCKER_PATH")
+  LOCAL_STORAGE_DOCKER_PATH="$APP_DATA_DOCKER_PATH/images"
+else
+  LOCAL_STORAGE_DOCKER_PATH=$(safe_absolute_path "$LOCAL_STORAGE_DOCKER_PATH")
+  APP_DATA_DOCKER_PATH=$(safe_absolute_path "${APP_DATA_DOCKER_PATH:-$(dirname "$LOCAL_STORAGE_DOCKER_PATH")}")
+fi
+if [[ "$USE_ACTIVE_IMAGE_ALIAS" == true ]]; then
+  PREVIOUS_ACTIVE_IMAGE_ID=$(docker image inspect --format '{{.Id}}' "$ACTIVE_APP_IMAGE")
+  [[ "$PREVIOUS_ACTIVE_IMAGE_ID" =~ ^sha256:[0-9a-fA-F]{64}$ ]] \
+    || fail "active application image could not be resolved"
+  if [[ "$INITIAL_APP_VERSION" == auto ]]; then
+    INITIAL_APP_VERSION=$(docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' \
+      "$ACTIVE_APP_IMAGE" | awk -F= '$1 == "IMAGE_APP_VERSION" {print substr($0, index($0, "=") + 1); exit}')
+    [[ "$INITIAL_APP_VERSION" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]] \
+      || fail "active application image does not contain a valid IMAGE_APP_VERSION"
+  fi
+fi
+
 HISTORY_FILE="$STATE_ROOT/history.json"
 CANDIDATE_NAME="ai-image-studio-candidate-${JOB_ID}"
 BACKUP_DIR="$BACKUP_ROOT/job-${JOB_ID}"
@@ -114,26 +158,35 @@ emit_progress() {
 }
 
 write_release_env() {
-  local image=$1
+  local release_image=$1
   local version=$2
   local digest=$3
   local schema=$4
   local temporary="${RELEASE_ENV_FILE}.tmp.${JOB_ID}"
-  printf 'APP_IMAGE=%s\nAPP_IMAGE_REFERENCE=%s\nAPP_VERSION=%s\nAPP_IMAGE_DIGEST=%s\nAPP_SCHEMA_VERSION=%s\n' \
-    "$image" "$image" "$version" "$digest" "$schema" >"$temporary"
+  local image_reference="${release_image%@*}@${digest}"
+  local runtime_image="$image_reference"
+  if [[ "$USE_ACTIVE_IMAGE_ALIAS" == true ]]; then
+    runtime_image="$ACTIVE_APP_IMAGE"
+  fi
+  printf 'AI_IMAGE_STUDIO_RUNTIME_IMAGE=%s\nAPP_IMAGE=%s\nAPP_IMAGE_REFERENCE=%s\nAPP_RELEASE_IMAGE=%s\nAPP_VERSION=%s\nAPP_IMAGE_DIGEST=%s\nAPP_SCHEMA_VERSION=%s\n' \
+    "$runtime_image" "$runtime_image" "$image_reference" "$release_image" "$version" "$digest" "$schema" \
+    >"$temporary"
   chmod 600 "$temporary"
   mv -f -- "$temporary" "$RELEASE_ENV_FILE"
 }
 
 if [[ ! -f "$RELEASE_ENV_FILE" ]]; then
-  write_release_env "${INITIAL_APP_IMAGE}@${INITIAL_APP_DIGEST}" "$INITIAL_APP_VERSION" \
-    "$INITIAL_APP_DIGEST" "0"
+  if [[ "$INITIAL_APP_DIGEST" == auto ]]; then
+    INITIAL_APP_DIGEST="$PREVIOUS_ACTIVE_IMAGE_ID"
+  fi
+  write_release_env "$INITIAL_APP_IMAGE" "$INITIAL_APP_VERSION" "$INITIAL_APP_DIGEST" "0"
 fi
 cp -- "$RELEASE_ENV_FILE" "$BACKUP_DIR/previous-release.env"
 
 # shellcheck source=/dev/null
 source "$RELEASE_ENV_FILE"
 CURRENT_IMAGE=${APP_IMAGE:?APP_IMAGE missing from release environment}
+CURRENT_RELEASE_IMAGE=${APP_RELEASE_IMAGE:-${APP_IMAGE_REFERENCE:?APP_IMAGE_REFERENCE missing from release environment}}
 CURRENT_VERSION=${APP_VERSION:?APP_VERSION missing from release environment}
 CURRENT_DIGEST=${APP_IMAGE_DIGEST:?APP_IMAGE_DIGEST missing from release environment}
 CURRENT_MIN_SCHEMA=$INITIAL_SCHEMA_MIN_SUPPORTED
@@ -149,18 +202,29 @@ fi
   || fail "current release lacks schema compatibility evidence"
 
 compose() {
-  docker compose --project-directory "$APP_DIR" \
-    --env-file "$BASE_ENV_FILE" --env-file "$APP_ENV_FILE" --env-file "$RELEASE_ENV_FILE" \
-    --file "$COMPOSE_FILE" "$@"
+  local env_args=(--env-file "$BASE_ENV_FILE")
+  if [[ -f "$APP_ENV_FILE" ]]; then
+    env_args+=(--env-file "$APP_ENV_FILE")
+  fi
+  env_args+=(--env-file "$RELEASE_ENV_FILE")
+  AI_IMAGE_STUDIO_DATA_DIR="$APP_DATA_DOCKER_PATH" \
+    docker compose --project-name "$COMPOSE_PROJECT_NAME" --project-directory "$APP_DIR" \
+      "${env_args[@]}" --file "$COMPOSE_FILE" "$@"
 }
 
 compose_target() {
   local image=$1
   shift
-  APP_IMAGE="$image" APP_IMAGE_REFERENCE="$image" APP_VERSION="$TARGET_VERSION" \
-    docker compose --project-directory "$APP_DIR" \
-      --env-file "$BASE_ENV_FILE" --env-file "$APP_ENV_FILE" --env-file "$RELEASE_ENV_FILE" \
-      --file "$COMPOSE_FILE" "$@"
+  local env_args=(--env-file "$BASE_ENV_FILE")
+  if [[ -f "$APP_ENV_FILE" ]]; then
+    env_args+=(--env-file "$APP_ENV_FILE")
+  fi
+  env_args+=(--env-file "$RELEASE_ENV_FILE")
+  AI_IMAGE_STUDIO_RUNTIME_IMAGE="$image" APP_IMAGE="$image" \
+    APP_IMAGE_REFERENCE="$image" APP_VERSION="$TARGET_VERSION" \
+    AI_IMAGE_STUDIO_DATA_DIR="$APP_DATA_DOCKER_PATH" \
+    docker compose --project-name "$COMPOSE_PROJECT_NAME" --project-directory "$APP_DIR" \
+      "${env_args[@]}" --file "$COMPOSE_FILE" "$@"
 }
 
 database_schema() {
@@ -196,6 +260,9 @@ restore_after_failure() {
     compose stop app worker >&2
   fi
   cp -- "$BACKUP_DIR/previous-release.env" "$RELEASE_ENV_FILE"
+  if [[ "$USE_ACTIVE_IMAGE_ALIAS" == true && -n "$PREVIOUS_ACTIVE_IMAGE_ID" ]]; then
+    docker tag "$PREVIOUS_ACTIVE_IMAGE_ID" "$ACTIVE_APP_IMAGE" >&2
+  fi
   if [[ "$MIGRATION_STARTED" == true && "$BACKUP_COMPLETE" == true ]]; then
     compose exec -T db pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
       --clean --if-exists --no-owner --no-privileges <"$BACKUP_DIR/database.dump" >&2
@@ -224,8 +291,13 @@ TARGET_SCHEMA="$CURRENT_SCHEMA"
 MANIFEST_FILE="$BACKUP_DIR/release-manifest.json"
 
 if [[ "$ACTION" == upgrade ]]; then
+  CURL_AUTH_ARGS=()
+  if [[ -n "${UPDATE_MANIFEST_TOKEN:-}" ]]; then
+    CURL_AUTH_ARGS=(--header "Authorization: Bearer $UPDATE_MANIFEST_TOKEN")
+  fi
   curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
-    --max-filesize 1048576 --output "$MANIFEST_FILE" "$UPDATE_MANIFEST_URL"
+    "${CURL_AUTH_ARGS[@]}" --max-filesize 1048576 --output "$MANIFEST_FILE" \
+    "$UPDATE_MANIFEST_URL"
   [[ $(stat -c %s "$MANIFEST_FILE") -le 1048576 ]] || fail "release manifest exceeds 1 MiB"
   jq -e '
     (.version | type == "string") and
@@ -276,14 +348,23 @@ fi
 
 [[ "$TARGET_IMAGE_TAG" =~ ^[A-Za-z0-9._/:@-]+$ ]] || fail "target image reference is invalid"
 [[ "$TARGET_DIGEST" =~ ^sha256:[0-9a-fA-F]{64}$ ]] || fail "target image digest is invalid"
-TARGET_IMAGE="${TARGET_IMAGE_TAG%@*}@${TARGET_DIGEST}"
+TARGET_NEEDS_PULL=true
+if [[ "$USE_ACTIVE_IMAGE_ALIAS" == true && "$TARGET_IMAGE_TAG" == "$ACTIVE_APP_IMAGE" ]] \
+  && docker image inspect "$TARGET_DIGEST" >/dev/null 2>&1; then
+  TARGET_IMAGE="$TARGET_DIGEST"
+  TARGET_NEEDS_PULL=false
+else
+  TARGET_IMAGE="${TARGET_IMAGE_TAG%@*}@${TARGET_DIGEST}"
+fi
 
 AVAILABLE_KB=$(df -Pk "$BACKUP_ROOT" | awk 'NR == 2 {print $4}')
 [[ "$AVAILABLE_KB" =~ ^[0-9]+$ ]] || fail "could not determine free disk space"
 ((AVAILABLE_KB * 1024 >= MIN_FREE_BYTES)) || fail "insufficient free disk space for a safe update"
 
 emit_progress 10 pulling_image
-docker pull "$TARGET_IMAGE" >&2
+if [[ "$TARGET_NEEDS_PULL" == true ]]; then
+  docker pull "$TARGET_IMAGE" >&2
+fi
 docker image inspect "$TARGET_IMAGE" >/dev/null
 
 emit_progress 40 entering_maintenance
@@ -347,20 +428,34 @@ DB_CONTAINER=$(compose ps -q db)
 COMPOSE_NETWORK=$(docker inspect --format '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{"\n"}}{{end}}' \
   "$DB_CONTAINER" | head -n1)
 [[ -n "$COMPOSE_NETWORK" ]] || fail "could not determine the Compose network"
+candidate_env_args=(--env-file "$BASE_ENV_FILE")
+if [[ -f "$APP_ENV_FILE" ]]; then
+  candidate_env_args+=(--env-file "$APP_ENV_FILE")
+fi
+candidate_publish_args=()
+if [[ "$CANDIDATE_USE_NETWORK_DNS" == true ]]; then
+  CANDIDATE_HEALTH_URL="http://${CANDIDATE_NAME}:3000/api/v1/ready"
+else
+  candidate_publish_args=(--publish "127.0.0.1:${CANDIDATE_PORT}:3000")
+  CANDIDATE_HEALTH_URL="http://127.0.0.1:${CANDIDATE_PORT}/api/v1/ready"
+fi
 docker run --detach --rm --name "$CANDIDATE_NAME" --network "$COMPOSE_NETWORK" \
-  --env-file "$BASE_ENV_FILE" --env-file "$APP_ENV_FILE" \
+  "${candidate_env_args[@]}" \
   --env "APP_VERSION=$TARGET_VERSION" --env "APP_IMAGE_REFERENCE=$TARGET_IMAGE" \
   --env 'LISTEN_ADDR=0.0.0.0:3000' \
-  --publish "127.0.0.1:${CANDIDATE_PORT}:3000" \
-  --volume "$LOCAL_STORAGE_PATH:/app/data/images" --read-only --tmpfs /tmp:size=256m \
+  "${candidate_publish_args[@]}" \
+  --volume "$LOCAL_STORAGE_DOCKER_PATH:/app/data/images" --read-only --tmpfs /tmp:size=256m \
   --security-opt no-new-privileges:true "$TARGET_IMAGE" serve >&2
-wait_ready "http://127.0.0.1:${CANDIDATE_PORT}/api/v1/ready" 60 || fail "candidate readiness check failed"
+wait_ready "$CANDIDATE_HEALTH_URL" 60 || fail "candidate readiness check failed"
 docker rm --force "$CANDIDATE_NAME" >/dev/null
 CANDIDATE_NAME=""
 
 emit_progress 85 switching_release
 FINAL_SCHEMA=$(database_schema)
-write_release_env "$TARGET_IMAGE" "$TARGET_VERSION" "$TARGET_DIGEST" "$FINAL_SCHEMA"
+if [[ "$USE_ACTIVE_IMAGE_ALIAS" == true ]]; then
+  docker tag "$TARGET_IMAGE" "$ACTIVE_APP_IMAGE" >&2
+fi
+write_release_env "$TARGET_IMAGE_TAG" "$TARGET_VERSION" "$TARGET_DIGEST" "$FINAL_SCHEMA"
 compose up --detach --no-deps app worker >&2
 wait_ready "$PUBLIC_HEALTH_URL" 60 || fail "active release readiness check failed"
 
@@ -376,7 +471,7 @@ jq -n \
   --arg targetImage "$TARGET_IMAGE_TAG" --arg targetDigest "$TARGET_DIGEST" \
   --argjson targetSchema "$FINAL_SCHEMA" --argjson targetMinSchema "$MIN_SCHEMA" \
   --argjson targetMaxSchema "$MAX_SCHEMA" --arg targetBackup "$BACKUP_DIR/backup-manifest.json" \
-  --arg currentVersion "$CURRENT_VERSION" --arg currentImage "${CURRENT_IMAGE%@*}" \
+  --arg currentVersion "$CURRENT_VERSION" --arg currentImage "${CURRENT_RELEASE_IMAGE%@*}" \
   --arg currentDigest "$CURRENT_DIGEST" --argjson currentSchema "$CURRENT_SCHEMA" \
   --argjson currentMinSchema "$CURRENT_MIN_SCHEMA" \
   --argjson currentMaxSchema "$CURRENT_MAX_SCHEMA" \

@@ -1,9 +1,12 @@
+name: ai-image-studio
+
 services:
   migrate:
     build:
       context: .
       dockerfile: Dockerfile
-    image: ${APP_IMAGE:-ai-image-studio:local}
+      target: runtime
+    image: ${AI_IMAGE_STUDIO_RUNTIME_IMAGE:-ai-image-studio:active}
     command: ["migrate"]
     env_file:
       - .env.example
@@ -18,7 +21,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: ${APP_IMAGE:-ai-image-studio:local}
+      target: runtime
+    image: ${AI_IMAGE_STUDIO_RUNTIME_IMAGE:-ai-image-studio:active}
     restart: unless-stopped
     ports:
       - "127.0.0.1:3100:3000"
@@ -27,16 +31,20 @@ services:
       - path: .env
         required: false
     environment:
-      APP_VERSION: ${APP_VERSION:-0.1.0}
-      APP_IMAGE_REFERENCE: ${APP_IMAGE_REFERENCE:-${APP_IMAGE:-ai-image-studio:local}}
+      HOST_UPDATER_URL: ""
+      HOST_UPDATER_SOCKET: /run/ai-image-studio-updater/host-updater.sock
+      HOST_UPDATER_TOKEN: ""
+      HOST_UPDATER_TOKEN_FILE: /run/ai-image-studio-updater/token
     depends_on:
       migrate:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
+      updater:
+        condition: service_healthy
     volumes:
-      - ./data:/app/data
-      - ${HOST_UPDATER_SOCKET_DIR:-./data/updater}:/run/ai-image-studio-updater:ro
+      - ${AI_IMAGE_STUDIO_DATA_DIR:-./data}:/app/data
+      - updater_runtime:/run/ai-image-studio-updater:ro
     tmpfs:
       - /tmp:size=256m
     read_only: true
@@ -52,28 +60,66 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: ${APP_IMAGE:-ai-image-studio:local}
+      target: runtime
+    image: ${AI_IMAGE_STUDIO_RUNTIME_IMAGE:-ai-image-studio:active}
     command: ["worker"]
     restart: unless-stopped
     env_file:
       - .env.example
       - path: .env
         required: false
-    environment:
-      APP_VERSION: ${APP_VERSION:-0.1.0}
-      APP_IMAGE_REFERENCE: ${APP_IMAGE_REFERENCE:-${APP_IMAGE:-ai-image-studio:local}}
     depends_on:
       migrate:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
     volumes:
-      - ./data:/app/data
+      - ${AI_IMAGE_STUDIO_DATA_DIR:-./data}:/app/data
     tmpfs:
       - /tmp:size=256m
     read_only: true
     security_opt:
       - no-new-privileges:true
+
+  updater:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: updater-runtime
+    image: ${UPDATER_IMAGE:-ai-image-studio-updater:local}
+    restart: unless-stopped
+    environment:
+      HOST_UPDATER_UNIX_SOCKET: /run/ai-image-studio-updater/host-updater.sock
+      HOST_UPDATER_SOCKET_GID: "10001"
+      HOST_UPDATER_TOKEN_FILE: /run/ai-image-studio-updater/token
+      HOST_UPDATER_STATE_DIR: /deployment-data/updater/service
+      HOST_UPDATER_EXECUTOR_PATH: /usr/local/libexec/ai-image-studio/execute-update.sh
+      HOST_UPDATER_EXECUTOR_CONFIG: /etc/ai-image-studio-updater/executor.env
+      HOST_UPDATER_JOB_TIMEOUT_SECONDS: ${HOST_UPDATER_JOB_TIMEOUT_SECONDS:-1800}
+      STORAGE_DRIVER: ${STORAGE_DRIVER:-local}
+      UPDATE_MANIFEST_URL: ${UPDATE_MANIFEST_URL:-https://github.com/KodeChicken/ai-image-studio/releases/latest/download/release-manifest.json}
+      UPDATE_MANIFEST_TOKEN: ${UPDATE_MANIFEST_TOKEN:-}
+      POSTGRES_USER: ${POSTGRES_USER:-ai_image_studio}
+      POSTGRES_DB: ${POSTGRES_DB:-ai_image_studio}
+      KEEP_PREVIOUS_RELEASES: ${KEEP_PREVIOUS_RELEASES:-3}
+      UPDATER_MIN_FREE_BYTES: ${UPDATER_MIN_FREE_BYTES:-5368709120}
+      RUST_LOG: ${HOST_UPDATER_RUST_LOG:-ai_image_studio_host_updater=info}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${DOCKER_CONFIG_DIR:-/root/.docker}:/root/.docker:ro
+      - .:/workspace:ro
+      - ${AI_IMAGE_STUDIO_DATA_DIR:-./data}:/deployment-data
+      - updater_runtime:/run/ai-image-studio-updater
+    tmpfs:
+      - /tmp:size=64m
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--unix-socket", "/run/ai-image-studio-updater/host-updater.sock", "http://localhost/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
 
   db:
     image: postgres:17-alpine
@@ -83,7 +129,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-ai_image_studio}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-18843de4f2e37455bedfe7e9fad84ab8f70e456c053f266a}
     volumes:
-      - ./data/postgres:/var/lib/postgresql/data
+      - ${AI_IMAGE_STUDIO_DATA_DIR:-./data}/postgres:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ai_image_studio} -d ${POSTGRES_DB:-ai_image_studio}"]
       interval: 10s
@@ -95,9 +141,12 @@ services:
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
-      - ./data/redis:/data
+      - ${AI_IMAGE_STUDIO_DATA_DIR:-./data}/redis:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 10
+
+volumes:
+  updater_runtime:

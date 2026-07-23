@@ -1,4 +1,4 @@
-use std::{env, net::SocketAddr, path::PathBuf, str::FromStr};
+use std::{env, fs, net::SocketAddr, path::PathBuf, str::FromStr};
 
 use anyhow::{Context, bail};
 use secrecy::SecretString;
@@ -88,6 +88,7 @@ pub struct Settings {
     pub rate_limit_user_requests: u32,
     pub update_channel: String,
     pub update_manifest_url: Option<String>,
+    pub update_manifest_token: Option<SecretString>,
     pub host_updater_url: Option<String>,
     pub host_updater_socket: Option<PathBuf>,
     pub host_updater_token: Option<SecretString>,
@@ -100,11 +101,18 @@ pub struct Settings {
 impl Settings {
     pub fn from_env() -> anyhow::Result<Self> {
         let storage_driver = env_or("STORAGE_DRIVER", "local").parse()?;
+        let host_updater_token = optional_secret("HOST_UPDATER_TOKEN", "HOST_UPDATER_TOKEN_FILE")?;
         let settings = Self {
             app_name: env_or("APP_NAME", "AI Image Studio"),
             app_env: env_or("APP_ENV", "development"),
-            app_version: env_or("APP_VERSION", env!("CARGO_PKG_VERSION")),
-            app_image_reference: env_or("APP_IMAGE_REFERENCE", "ai-image-studio:local"),
+            app_version: env_or(
+                "IMAGE_APP_VERSION",
+                &env_or("APP_VERSION", env!("CARGO_PKG_VERSION")),
+            ),
+            app_image_reference: env_or(
+                "IMAGE_APP_REFERENCE",
+                &env_or("APP_IMAGE_REFERENCE", "ai-image-studio:local"),
+            ),
             listen_addr: env_or("LISTEN_ADDR", "0.0.0.0:3000")
                 .parse()
                 .context("invalid LISTEN_ADDR")?,
@@ -160,9 +168,10 @@ impl Settings {
             rate_limit_user_requests: parse_or("RATE_LIMIT_USER_REQUESTS", 120)?,
             update_channel: env_or("UPDATE_CHANNEL", "stable"),
             update_manifest_url: optional("UPDATE_MANIFEST_URL"),
+            update_manifest_token: optional("UPDATE_MANIFEST_TOKEN").map(SecretString::from),
             host_updater_url: optional("HOST_UPDATER_URL"),
             host_updater_socket: optional("HOST_UPDATER_SOCKET").map(PathBuf::from),
-            host_updater_token: optional("HOST_UPDATER_TOKEN").map(SecretString::from),
+            host_updater_token,
             keep_previous_releases: parse_or("KEEP_PREVIOUS_RELEASES", 3)?,
             allow_custom_base_url: parse_or("ALLOW_CUSTOM_BASE_URL", true)?,
             allow_private_provider_hosts: parse_or("ALLOW_PRIVATE_PROVIDER_HOSTS", false)?,
@@ -296,6 +305,28 @@ fn optional(name: &str) -> Option<String> {
 
 fn required(name: &str) -> anyhow::Result<String> {
     optional(name).with_context(|| format!("{name} is required"))
+}
+
+fn optional_secret(value_name: &str, file_name: &str) -> anyhow::Result<Option<SecretString>> {
+    if let Some(value) = optional(value_name) {
+        if optional(file_name).is_some() {
+            bail!("{value_name} and {file_name} cannot both be configured");
+        }
+        return Ok(Some(SecretString::from(value)));
+    }
+    let Some(path) = optional(file_name).map(PathBuf::from) else {
+        return Ok(None);
+    };
+    if !path.is_absolute() {
+        bail!("{file_name} must be an absolute path");
+    }
+    let value = fs::read_to_string(&path)
+        .with_context(|| format!("failed to read {file_name} from {}", path.display()))?;
+    let value = value.trim();
+    if value.is_empty() {
+        bail!("{file_name} must not be empty");
+    }
+    Ok(Some(SecretString::from(value.to_owned())))
 }
 
 fn parse_or<T>(name: &str, default: T) -> anyhow::Result<T>

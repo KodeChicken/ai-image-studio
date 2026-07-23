@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     env,
-    fs::File,
+    fs::{self, File},
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::Arc,
@@ -86,7 +86,7 @@ impl Settings {
                 "HOST_UPDATER_UNIX_SOCKET and HOST_UPDATER_SOCKET_GID must be configured together"
             );
         }
-        let token = required("HOST_UPDATER_TOKEN")?;
+        let token = required_secret("HOST_UPDATER_TOKEN", "HOST_UPDATER_TOKEN_FILE")?;
         if token.len() < 32 {
             bail!("HOST_UPDATER_TOKEN must contain at least 32 bytes");
         }
@@ -132,6 +132,26 @@ fn required(name: &str) -> anyhow::Result<String> {
 
 fn optional(name: &str) -> Option<String> {
     env::var(name).ok().filter(|value| !value.trim().is_empty())
+}
+
+fn required_secret(value_name: &str, file_name: &str) -> anyhow::Result<String> {
+    if let Some(value) = optional(value_name) {
+        if optional(file_name).is_some() {
+            bail!("{value_name} and {file_name} cannot both be configured");
+        }
+        return Ok(value);
+    }
+    let path = PathBuf::from(required(file_name)?);
+    if !path.is_absolute() {
+        bail!("{file_name} must be an absolute path");
+    }
+    let value = fs::read_to_string(&path)
+        .with_context(|| format!("failed to read {file_name} from {}", path.display()))?;
+    let value = value.trim();
+    if value.is_empty() {
+        bail!("{file_name} must not be empty");
+    }
+    Ok(value.to_owned())
 }
 
 fn absolute_path(name: &str) -> anyhow::Result<PathBuf> {

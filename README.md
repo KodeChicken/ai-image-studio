@@ -33,14 +33,14 @@ AI Image Studio 是一个可独立部署的多供应商 AI 图片生成平台。
 
 ```bash
 cp .env.example .env
-docker compose up --build
+docker compose up -d --build
 ```
 
 Windows PowerShell：
 
 ```powershell
 Copy-Item .env.example .env
-docker compose up --build
+docker compose up -d --build
 ```
 
 打开 `http://127.0.0.1:3100`。
@@ -121,7 +121,9 @@ pnpm build
 
 ### Host Updater
 
-在线升级需要把独立的 `ai-image-studio-host-updater` 安装为宿主机服务。它只监听专用 Unix Socket 或回环地址，通过 Bearer + HMAC 验证 Web 请求，并调用固定执行器完成备份、镜像 Digest 校验、Migration、候选健康检查、切换和失败恢复。Web 容器不会获得 Docker Socket。
+`docker compose up -d` 会同时启动内置的 `updater` sidecar，无需再安装 systemd Host Updater。它只监听共享卷中的专用 Unix Socket，首次启动自动生成内部 Token，并通过 Bearer + HMAC 验证 Web 请求。只有 Updater 挂载 Docker Socket；Web/Worker 均不具备 Docker 权限。固定执行器负责备份、镜像 Digest 校验、Migration、候选健康检查、活动镜像切换和失败恢复。
+
+升级成功后，新 Digest 会切换到稳定的本地 `ai-image-studio:active` 别名，版本状态写入 `data/updater`。以后即使在宿主机再次执行普通 `docker compose up -d`，也不会因旧版 `.env` 回退镜像。私有 GitHub 仓库需要在 `.env` 一次性配置 `UPDATE_MANIFEST_TOKEN`，私有 GHCR 还需在宿主机执行一次 `docker login ghcr.io`；这些配置不需要随版本修改。
 
 Release Manifest 对外文件使用 snake_case；Web API 返回浏览器时仍使用 camelCase。内部 HTTPS 服务使用私有 CA 时，将 CA 的 PEM 文件挂载到容器并通过绝对路径 `HTTP_CA_CERT_FILE` 配置，TLS 校验不会被关闭。仓库演练已从 Web 管理 API 经 Unix Socket 跑通 Host Updater、正式执行器和部署历史终态回写。
 
@@ -162,14 +164,14 @@ Requirements: Docker Desktop or Docker Engine with Compose.
 
 ```bash
 cp .env.example .env
-docker compose up --build
+docker compose up -d --build
 ```
 
 On Windows PowerShell:
 
 ```powershell
 Copy-Item .env.example .env
-docker compose up --build
+docker compose up -d --build
 ```
 
 Open `http://127.0.0.1:3100`.
@@ -250,7 +252,9 @@ pnpm build
 
 ### Host Updater
 
-Online upgrades require the independent `ai-image-studio-host-updater` host service. It binds only to a dedicated Unix socket or loopback address, authenticates web requests with Bearer + HMAC, and invokes one fixed executor for backups, immutable image-digest verification, migrations, candidate health checks, switching, and automatic recovery. The web container never receives the Docker socket.
+`docker compose up -d` starts the built-in `updater` sidecar, so no systemd Host Updater installation is required. It listens only on a dedicated Unix socket in a shared volume, creates the internal token on first start, and authenticates Web requests with Bearer + HMAC. Only the Updater mounts the Docker socket; Web and Worker never receive Docker privileges. Its fixed executor performs backups, immutable digest verification, migrations, candidate health checks, active-image switching, and automatic recovery.
+
+After a successful update, the verified digest is tagged as the stable local `ai-image-studio:active` image and release state is persisted under `data/updater`. A later plain `docker compose up -d` therefore cannot revert the application through an old `.env`. Private GitHub repositories require a one-time `UPDATE_MANIFEST_TOKEN`; private GHCR packages also require one host-side `docker login ghcr.io`. Neither setting changes per release.
 
 The downloadable Release Manifest uses snake_case, while the Web API serializes its browser response as camelCase. For internal HTTPS endpoints backed by a private CA, mount the CA PEM and configure its absolute path through `HTTP_CA_CERT_FILE`; TLS verification remains enabled. The repository drill now covers the complete path from the Web admin API through the Unix socket, Host Updater, fixed executor, and deployment-history synchronization.
 

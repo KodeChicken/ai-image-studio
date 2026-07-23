@@ -1,10 +1,11 @@
 # Host Updater 部署与故障演练
 
-Host Updater 是独立运行在宿主机上的最小控制服务。Web 应用只负责管理员鉴权、二次输密、Manifest 预检和任务展示；Docker、备份目录及发布切换权限只交给 Host Updater。
+Host Updater 是默认随 Docker Compose 启动的独立控制 sidecar。Web 应用只负责管理员鉴权、二次输密、Manifest 预检和任务展示；Docker、备份目录及发布切换权限只交给 Updater 容器。无需在 VPS 额外安装 systemd 服务。
 
 ## 1. 已实现边界
 
-- 仅允许监听 `127.0.0.1` 或 `::1`。
+- 默认只监听共享命名卷中的 Unix Socket，不向宿主机或公网发布端口。
+- 首次启动自动生成 32 字节随机 Token；Web 只读挂载 Socket/Token 卷。
 - `POST /v1/jobs` 和 `GET /v1/jobs/{id}` 同时校验 Bearer Token、时间戳和 HMAC-SHA256，请求时间偏差最多 60 秒。
 - Job ID 幂等；同一时间只允许一个升级或回滚任务。
 - Job 状态写入宿主机独立目录，服务重启后不会把中断任务误报为成功。
@@ -18,87 +19,73 @@ Host Updater 是独立运行在宿主机上的最小控制服务。Web 应用只
 生产宿主机需要：
 
 - Docker Engine 和 Docker Compose v2
-- `curl`、`jq`、`tar`、`sha256sum`
-- 运行中的 AI Image Studio Compose 项目
+- 可用的 `/var/run/docker.sock`
+- 本仓库的 Compose 项目
 
-Host Updater 自身不放进 Web 容器，也不通过 TCP 暴露到公网。
+`curl`、`jq`、Docker CLI、Compose v2、备份工具和固定执行器均已放入 Updater 镜像，不要求逐项安装到 VPS。Host Updater 不放进 Web 容器，也不通过 TCP 暴露到公网。
 
-## 3. 构建和安装
-
-```bash
-cargo build --release --package ai-image-studio-host-updater
-
-sudo install -m 0755 \
-  target/release/ai-image-studio-host-updater \
-  /usr/local/bin/ai-image-studio-host-updater
-
-sudo install -d -m 0755 /usr/local/libexec/ai-image-studio
-sudo install -m 0755 \
-  host-updater/scripts/execute-update.sh \
-  /usr/local/libexec/ai-image-studio/execute-update.sh
-
-sudo install -d -m 0700 /etc/ai-image-studio-updater
-sudo install -m 0600 \
-  host-updater/config/host-updater.env.example \
-  /etc/ai-image-studio-updater/host-updater.env
-sudo install -m 0600 \
-  host-updater/config/executor.env.example \
-  /etc/ai-image-studio-updater/executor.env
-
-sudo install -m 0644 \
-  host-updater/systemd/ai-image-studio-host-updater.service \
-  /etc/systemd/system/ai-image-studio-host-updater.service
-```
-
-生成至少 32 字节随机 Token：
+## 3. 首次部署与旧部署迁移
 
 ```bash
-openssl rand -hex 32
+git pull --ff-only
+docker compose up -d --build
+docker compose ps
 ```
 
-同一个值分别配置到：
+成功标准：`db`、`redis`、`updater`、`app`、`worker` 正常运行，`migrate` 成功退出。检查 Updater：
 
-- Web 应用 `.env` 的 `HOST_UPDATER_TOKEN`
-- `/etc/ai-image-studio-updater/host-updater.env` 的 `HOST_UPDATER_TOKEN`
+```bash
+docker compose logs --tail=100 updater
+docker compose exec updater curl --fail --silent \
+  --unix-socket /run/ai-image-studio-updater/host-updater.sock \
+  http://localhost/health
+```
 
-Linux Compose 部署推荐专用 Unix Socket。Web 应用 `.env` 配置为：
+内部 Token 位于 Compose 命名卷，只由 Updater 写入，Web 只读访问，不需要人工生成或复制。`app` 与 `worker` 都没有 Docker Socket；可用以下命令核对：
+
+```bash
+docker inspect "$(docker compose ps -q app)" --format '{{json .Mounts}}'
+docker inspect "$(docker compose ps -q worker)" --format '{{json .Mounts}}'
+docker inspect "$(docker compose ps -q updater)" --format '{{json .Mounts}}'
+```
+
+Compose 固定使用项目名 `ai-image-studio`。如果旧版曾安装 systemd Updater，新 Compose 验证正常后可停止旧服务，避免保留不再使用的高权限进程：
+
+```bash
+sudo systemctl disable --now ai-image-studio-host-updater
+```
+
+这不会删除旧的二进制和配置；确认无需回退后再由管理员自行清理。
+
+### 3.1 私有 GitHub/GHCR
+
+公开仓库和公开 Package 无需附加凭据。当前仓库若为私有，需要一次性完成：
+
+```bash
+docker login ghcr.io
+```
+
+登录凭据默认保存在 VPS 的 `/root/.docker`，Compose 以只读方式挂给 Updater。另在 `.env` 填写一个具有仓库 Release 读取权限的 Token：
 
 ```env
-HOST_UPDATER_URL=
-HOST_UPDATER_SOCKET=/run/ai-image-studio-updater/host-updater.sock
-HOST_UPDATER_SOCKET_DIR=/run/ai-image-studio-updater
-UPDATE_MANIFEST_URL=https://github.com/KodeChicken/ai-image-studio/releases/latest/download/release-manifest.json
-# 私有 CA 才需要；必须是容器内可读的绝对 PEM 路径。
-HTTP_CA_CERT_FILE=/app/config/internal-release-ca.crt
+UPDATE_MANIFEST_TOKEN=replace-with-release-read-token
 ```
 
-`HOST_UPDATER_SOCKET_DIR` 只把该专用 API Socket 只读挂载到 Web 容器，不是 Docker Socket。Host Updater 的 `HOST_UPDATER_SOCKET_GID=10001` 与镜像内 `USER 10001:10001` 对齐。
+该 Token 用于 Web 与 Updater 读取私有 `release-manifest.json`，不需要随版本修改。不要把 Token 提交到 Git。
 
-`HTTP_CA_CERT_FILE` 会把私有根 CA 加入 Web 应用的 HTTP 客户端信任集合，不会关闭证书链或主机名校验。应挂载 CA 证书而不是把服务器叶子证书同时当作 CA。宿主机执行器访问同一内部 Manifest 时，还要把该 CA 安装到宿主机系统信任库，或在 Host Updater 服务环境中设置 `CURL_CA_BUNDLE=/absolute/path/to/ca.crt`。
-
-Windows 本机开发且 Web 不在 Linux 容器内时，可不配置 Socket，改用 `HOST_UPDATER_URL=http://127.0.0.1:3199/`。不得把 Updater TCP 端口开放到公网。
-
-固定执行器内容后写入哈希：
-
-```bash
-sha256sum /usr/local/libexec/ai-image-studio/execute-update.sh
-```
-
-把第一列填入 `HOST_UPDATER_EXECUTOR_SHA256`。
-
-### 3.1 GitHub 正式发布配置
+### 3.2 GitHub 正式发布配置
 
 仓库的 [`.github/workflows/release.yml`](../.github/workflows/release.yml) 会在推送 `vMAJOR.MINOR.PATCH` Tag 时自动：
 
 1. 重新执行后端和前端检查。
-2. 使用 Buildx 构建 `linux/amd64` 正式镜像并推送到 `ghcr.io/kodechicken/ai-image-studio`。
-3. 获取 Registry 返回的不可变镜像 Digest。
+2. 使用 Buildx 分别构建 `linux/amd64` 应用镜像和 Updater 镜像并推送到 GHCR。
+3. 获取两个镜像的不可变 Digest。
 4. 根据 `backend/migrations` 的最高版本生成 `release-manifest.json`。
 5. 创建 GitHub Release，上传 Manifest。
 
 该流程不需要额外的签名密钥或 GitHub Actions Secrets。它与 Sub2API 的简化发布方式一致，信任 GitHub Release、HTTPS 和 Registry；执行器通过 `image@sha256:...` 固定并校验实际拉取的镜像内容。
 
-确认 GHCR Package 对 VPS 可读。公开 Package 无需登录；私有 Package 必须先在 VPS 执行 `docker login ghcr.io`，并使用仅具有 `read:packages` 权限的 Token。
+确认 GHCR Package 对 VPS 可读。公开 Package 无需登录；私有 Package 按 3.1 节完成一次性登录。
 
 正式发布示例：
 
@@ -118,6 +105,8 @@ git push origin v0.1.1
   "version": "0.2.0",
   "image": "ghcr.io/codechicken/ai-image-studio:v0.2.0",
   "image_digest": "sha256:...",
+  "updater_image": "ghcr.io/codechicken/ai-image-studio-updater:v0.2.0",
+  "updater_image_digest": "sha256:...",
   "schema_target": 10,
   "schema_min_supported": 9,
   "schema_max_supported": 12,
@@ -146,30 +135,29 @@ Local 模式在停写后生成：
 
 S3 是主存储，不等于已经备份。S3 模式要求独立备份任务在 `S3_BACKUP_REFERENCE_FILE` 中写入最近一次不可变快照、对象版本或跨 Bucket 备份引用。执行器会检查文件存在、非空且未超过 `S3_BACKUP_MAX_AGE_SECONDS`，否则拒绝升级。
 
-## 6. 启动
+## 6. 启动、停止与日志
 
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now ai-image-studio-host-updater
-curl -i http://127.0.0.1:3199/health
-sudo journalctl -u ai-image-studio-host-updater -f
+docker compose up -d
+docker compose restart updater
+docker compose logs -f updater
 ```
 
-健康接口只证明 Updater 进程存在；升级是否可执行还取决于执行器配置、磁盘、数据库、备份证据和 Manifest。
+`app` 会等待 Updater healthcheck 通过再启动。健康接口只证明 Updater 进程、Unix Socket 和 Token 已就绪；升级是否可执行还取决于磁盘、数据库、备份证据、Manifest 和 Registry 登录态。
 
 ## 7. 执行顺序
 
 1. 校验配置、数据库健康、Schema 兼容窗口和磁盘空间。
-2. 在旧服务继续运行时按 Digest 拉取镜像；下载或 Digest 校验失败不会造成业务停机。
+2. 在旧服务继续运行时按 Digest 拉取预构建镜像；下载或 Digest 校验失败不会造成业务停机，也不会在 VPS 编译源码。
 3. 停止 `app` 与 `worker`，保持 PostgreSQL/Redis 运行，形成一致停写点。
 4. 备份数据库，并备份 Local 图片或验证 S3 独立备份证据。
 5. 升级时运行目标镜像内的 SQLx Migrator，并核对最终 Schema。
-6. 在同一 Compose 网络启动临时候选容器，检查 `/api/v1/ready` 的数据库和 Redis 状态。
-7. 候选成功后写入 `release.env`，切换正式 `app/worker` 并再次健康检查。
+6. 在同一 Compose 网络启动临时候选容器，通过容器 DNS 检查 `/api/v1/ready`，不占用额外宿主机端口。
+7. 候选成功后把目标 Digest 标记为本地 `ai-image-studio:active`，写入 `data/updater/release.env`，切换正式 `app/worker` 并再次健康检查。
 8. 写入宿主机 `history.json`、Release 记录和数据库 `deployment_history`。
 9. 只保留当前版本及之前三个版本的宿主机记录和备份。
 
-任何错误都会停止候选/新应用、恢复上一份 `release.env`；Migration 已开始时还会恢复同批次数据库备份和 Local 图片备份，再启动旧应用并执行健康检查。
+任何错误都会停止候选/新应用、恢复上一份 `release.env` 并把活动别名重新指向旧 Image ID；Migration 已开始时还会恢复同批次数据库备份和 Local 图片备份，再启动旧应用并执行健康检查。因为 Compose 始终使用稳定活动别名，宿主机以后普通执行 `docker compose up -d` 不会被旧 `.env` 回退版本。
 
 ## 8. 真实 Docker 隔离成功链
 
