@@ -35,7 +35,7 @@ services:
       redis:
         condition: service_healthy
     volumes:
-      - ./data/images:/app/data/images
+      - ./data:/app/data
       - ${HOST_UPDATER_SOCKET_DIR:-./data/updater}:/run/ai-image-studio-updater:ro
     tmpfs:
       - /tmp:size=256m
@@ -68,7 +68,7 @@ services:
       redis:
         condition: service_healthy
     volumes:
-      - ./data/images:/app/data/images
+      - ./data:/app/data
     tmpfs:
       - /tmp:size=256m
     read_only: true

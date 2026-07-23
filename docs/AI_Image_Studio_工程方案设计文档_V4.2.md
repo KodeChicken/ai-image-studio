@@ -2017,7 +2017,7 @@ services:
       db:
         condition: service_healthy
     volumes:
-      - ./data/images:/app/data/images
+      - ./data:/app/data
     tmpfs:
       - /tmp:size=256m
     read_only: true
@@ -2059,7 +2059,7 @@ services:
       - ./data/redis:/data
 ```
 
-Local Storage 模式下，`./data/images` 保存的是输入图和生成结果的真实文件，属于业务数据目录。该挂载不得删除，也不得改成容器内临时目录；生产环境必须将它纳入备份。全新部署若从第一天只使用 S3，可以不依赖本地图片卷；从 Local 切换到 S3 的部署在旧 Asset 迁移完成前必须保留该挂载。
+应用容器统一将宿主机 `./data` 挂载到 `/app/data`，便于整体迁移；Local Storage 仍以 `/app/data/images` 为图片根目录，因此真实文件位于宿主机 `./data/images`。该挂载不得删除，也不得改成容器内临时目录；生产环境必须将图片目录纳入备份。全新部署若从第一天只使用 S3，可以不依赖本地图片文件；从 Local 切换到 S3 的部署在旧 Asset 迁移完成前必须保留该挂载。
 
 ---
 
@@ -2988,7 +2988,7 @@ services:
       migrator:
         condition: service_completed_successfully
     volumes:
-      - ./data/images:/app/data/images
+      - ./data:/app/data
 ```
 
 `.env` 中使用明确版本，不把 `latest` 作为唯一部署依据：
