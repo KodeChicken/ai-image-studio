@@ -19,6 +19,7 @@
 ### 修复
 
 - Release Manifest 同时兼容 snake_case 发布契约与 Web camelCase 响应，并支持通过 `HTTP_CA_CERT_FILE` 信任内部 HTTPS 根 CA。
+- Release Manifest 检查安全跟随受限的 HTTPS 重定向，兼容 GitHub Release 下载地址且不向跨域目标转发 Token。
 - Host Updater 正确解析执行器的 camelCase 进度消息，执行升级时不再收紧既有图片挂载目录权限。
 
 ## [0.1.0] - 2026-07-21

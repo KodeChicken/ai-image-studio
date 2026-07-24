@@ -2,7 +2,7 @@ use anyhow::Context;
 use axum::{
     Json, Router,
     extract::{Path, State},
-    http::HeaderMap,
+    http::{HeaderMap, StatusCode, header},
     routing::{get, post},
 };
 use hmac::{Hmac, Mac};
@@ -25,6 +25,7 @@ use crate::{
 const ACTION_HEADER: &str = "x-ai-studio-action";
 const ACTION_HEADER_VALUE: &str = "update";
 const MANIFEST_LIMIT: usize = 1024 * 1024;
+const MANIFEST_REDIRECT_LIMIT: usize = 5;
 const UPDATER_TIMESTAMP_HEADER: &str = "x-ai-studio-timestamp";
 const UPDATER_SIGNATURE_HEADER: &str = "x-ai-studio-signature";
 
@@ -378,21 +379,50 @@ async fn fetch_manifest(state: &AppState) -> AppResult<ReleaseManifest> {
         .update_manifest_url
         .as_deref()
         .ok_or_else(|| AppError::Validation("UPDATE_MANIFEST_URL is not configured".to_owned()))?;
-    let url = Url::parse(raw_url)
+    let configured_url = Url::parse(raw_url)
         .map_err(|_| AppError::Validation("UPDATE_MANIFEST_URL is invalid".to_owned()))?;
-    if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
-        return Err(AppError::Validation(
-            "UPDATE_MANIFEST_URL must use HTTPS and contain no credentials".to_owned(),
-        ));
-    }
-    let mut request = state.http_client.get(url);
-    if let Some(token) = &state.settings.update_manifest_token {
-        request = request.bearer_auth(token.expose_secret());
-    }
-    let response = request
-        .send()
-        .await
-        .map_err(|error| AppError::Upstream(error.to_string()))?;
+    validate_manifest_url(&configured_url)?;
+    let mut url = configured_url.clone();
+    let mut redirect_count = 0;
+    let response = loop {
+        let mut request = state.http_client.get(url.clone());
+        if same_origin(&url, &configured_url)
+            && let Some(token) = &state.settings.update_manifest_token
+        {
+            request = request.bearer_auth(token.expose_secret());
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|error| AppError::Upstream(error.to_string()))?;
+        if !matches!(
+            response.status(),
+            StatusCode::MOVED_PERMANENTLY
+                | StatusCode::FOUND
+                | StatusCode::SEE_OTHER
+                | StatusCode::TEMPORARY_REDIRECT
+                | StatusCode::PERMANENT_REDIRECT
+        ) {
+            break response;
+        }
+        if redirect_count >= MANIFEST_REDIRECT_LIMIT {
+            return Err(AppError::Upstream(
+                "release manifest exceeded the redirect limit".to_owned(),
+            ));
+        }
+        let location = response
+            .headers()
+            .get(header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .ok_or_else(|| {
+                AppError::Upstream("release manifest returned an invalid redirect".to_owned())
+            })?;
+        url = url.join(location).map_err(|_| {
+            AppError::Upstream("release manifest returned an invalid redirect".to_owned())
+        })?;
+        validate_manifest_url(&url)?;
+        redirect_count += 1;
+    };
     if !response.status().is_success() {
         return Err(AppError::Upstream(format!(
             "release manifest returned HTTP {}",
@@ -431,6 +461,26 @@ async fn fetch_manifest(state: &AppState) -> AppResult<ReleaseManifest> {
         ));
     }
     Ok(manifest)
+}
+
+fn validate_manifest_url(url: &Url) -> AppResult<()> {
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return Err(AppError::Validation(
+            "UPDATE_MANIFEST_URL and its redirects must use HTTPS and contain no credentials"
+                .to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn same_origin(left: &Url, right: &Url) -> bool {
+    left.scheme() == right.scheme()
+        && left.host_str() == right.host_str()
+        && left.port_or_known_default() == right.port_or_known_default()
 }
 
 async fn validate_rollback_target(state: &AppState, target: &str) -> AppResult<()> {
@@ -743,6 +793,30 @@ mod tests {
     fn semantic_versions_accept_optional_v_prefix() {
         assert_eq!(parse_version("v1.2.3").unwrap(), Version::new(1, 2, 3));
         assert!(parse_version("latest").is_err());
+    }
+
+    #[test]
+    fn manifest_redirects_require_safe_https_urls() {
+        let configured = Url::parse("https://github.com/example/releases/latest").unwrap();
+        let same_host = configured
+            .join("/example/releases/download/v1/manifest.json")
+            .unwrap();
+        let asset_host = Url::parse("https://objects.githubusercontent.com/manifest.json").unwrap();
+
+        assert!(validate_manifest_url(&same_host).is_ok());
+        assert!(validate_manifest_url(&asset_host).is_ok());
+        assert!(same_origin(&configured, &same_host));
+        assert!(!same_origin(&configured, &asset_host));
+        assert!(
+            validate_manifest_url(&Url::parse("http://example.com/manifest.json").unwrap())
+                .is_err()
+        );
+        assert!(
+            validate_manifest_url(
+                &Url::parse("https://user:password@example.com/manifest.json").unwrap()
+            )
+            .is_err()
+        );
     }
 
     #[test]
