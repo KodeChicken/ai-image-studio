@@ -71,6 +71,7 @@ const templateTitle = ref('')
 const templatePrompt = ref('')
 const imagePreviewOpen = ref(false)
 const imagePreview = ref<{ contentUrl: string; label: string; metadata: string } | null>(null)
+const mobilePanel = ref<'conversations' | 'parameters' | null>(null)
 const parameterPanelWidth = ref(340)
 const viewportWidth = ref(window.innerWidth)
 const resizingParameterPanel = ref(false)
@@ -177,6 +178,7 @@ watch(parameterPanelWidth, (value) => {
 
 onMounted(async () => {
   window.addEventListener('resize', updateParameterPanelBounds)
+  window.addEventListener('keydown', closeMobilePanelOnEscape)
   updateParameterPanelBounds()
   await Promise.all([loadConversations(), loadProviders(), loadModels(), loadTemplates()])
   if (!providerId.value) providerId.value = providers.value[0]?.id ?? null
@@ -188,6 +190,7 @@ onBeforeUnmount(() => {
   stopParameterResize?.()
   files.value.forEach((attachment) => URL.revokeObjectURL(attachment.previewUrl))
   window.removeEventListener('resize', updateParameterPanelBounds)
+  window.removeEventListener('keydown', closeMobilePanelOnEscape)
   document.documentElement.style.removeProperty('--studio-parameter-panel-width')
 })
 
@@ -252,6 +255,7 @@ async function selectConversation(id: string) {
   composerParentId.value = null
   providerId.value = activeConversation.value.defaultProviderId ?? providerId.value
   modelId.value = activeConversation.value.defaultModelId ?? modelId.value
+  mobilePanel.value = null
   await scrollBottom()
 }
 
@@ -336,6 +340,14 @@ function imageDownloadName(id: string, mimeType: string) {
 function updateParameterPanelBounds() {
   viewportWidth.value = window.innerWidth
   parameterPanelWidth.value = Math.min(parameterPanelWidth.value, parameterPanelMaxWidth.value)
+  if (
+    (mobilePanel.value === 'conversations' && viewportWidth.value > 860)
+    || (mobilePanel.value === 'parameters' && viewportWidth.value > 1220)
+  ) mobilePanel.value = null
+}
+
+function closeMobilePanelOnEscape(event: KeyboardEvent) {
+  if (event.key === 'Escape') mobilePanel.value = null
 }
 
 function resizeParameterPanel(delta: number) {
@@ -784,10 +796,17 @@ async function scrollBottom() {
 
 <template>
   <div class="studio-shell">
-    <aside class="conversation-rail">
+    <aside
+      id="studio-conversations"
+      class="conversation-rail"
+      :class="{ open: mobilePanel === 'conversations' }"
+    >
       <div class="rail-heading">
         <div><span class="eyebrow muted">WORKSPACE</span><h2>创作会话</h2></div>
-        <button class="icon-button" title="新建会话" @click="createConversation">＋</button>
+        <div class="panel-heading-actions">
+          <button class="icon-button" title="新建会话" @click="createConversation">＋</button>
+          <button class="studio-panel-close" type="button" aria-label="关闭会话列表" @click="mobilePanel = null">×</button>
+        </div>
       </div>
       <n-input v-model:value="conversationSearch" clearable placeholder="搜索会话标题" size="small" />
       <div class="conversation-list">
@@ -821,6 +840,22 @@ async function scrollBottom() {
     <section class="studio-main">
       <header class="studio-header">
         <div><span class="eyebrow muted">CREATIVE SESSION</span><h1>{{ activeConversation?.title || '开始新的创作' }}</h1></div>
+        <div class="studio-mobile-tools">
+          <button
+            class="conversation-panel-trigger"
+            type="button"
+            aria-controls="studio-conversations"
+            :aria-expanded="mobilePanel === 'conversations'"
+            @click="mobilePanel = 'conversations'"
+          >☰ 会话</button>
+          <button
+            class="parameter-panel-trigger"
+            type="button"
+            aria-controls="studio-parameters"
+            :aria-expanded="mobilePanel === 'parameters'"
+            @click="mobilePanel = 'parameters'"
+          >⚙ 参数</button>
+        </div>
         <div class="task-status-actions">
           <span v-if="taskStage" class="task-pill" :class="{ active: sending && !cancelling }">{{ taskStatusWithElapsed }}</span>
           <button
@@ -956,14 +991,18 @@ async function scrollBottom() {
           <textarea ref="composerInput" v-model="prompt" rows="2" placeholder="继续描述你的画面，或基于上一轮提出修改…" @paste="pasteFiles" @keydown.ctrl.enter.prevent="send"></textarea>
           <div class="composer-actions">
             <label class="upload-button">＋ 参考图<input ref="fileInput" type="file" accept="image/png,image/jpeg,image/webp" multiple @change="chooseFiles" /></label>
-            <span>Ctrl + Enter 发送</span>
+            <span class="composer-shortcut">Ctrl + Enter 发送</span>
             <button class="send-button" :disabled="sending || !prompt.trim()" @click="send">{{ sending ? '生成中' : '生成' }} <b>↗</b></button>
           </div>
         </div>
       </footer>
     </section>
 
-    <aside class="parameter-panel" :class="{ resizing: resizingParameterPanel }">
+    <aside
+      id="studio-parameters"
+      class="parameter-panel"
+      :class="{ resizing: resizingParameterPanel, open: mobilePanel === 'parameters' }"
+    >
       <div
         class="parameter-resize-handle"
         role="separator"
@@ -978,7 +1017,10 @@ async function scrollBottom() {
         @keydown.left.prevent="resizeParameterPanel(40)"
         @keydown.right.prevent="resizeParameterPanel(-40)"
       ><span></span></div>
-      <header><div><span class="eyebrow muted">PARAMETERS</span><h2>生成参数</h2></div></header>
+      <header>
+        <div><span class="eyebrow muted">PARAMETERS</span><h2>生成参数</h2></div>
+        <button class="studio-panel-close" type="button" aria-label="关闭生成参数" @click="mobilePanel = null">×</button>
+      </header>
       <div class="parameter-scroll">
         <section class="parameter-group model-parameters">
           <h3>模型</h3>
@@ -1010,6 +1052,13 @@ async function scrollBottom() {
         </details>
       </div>
     </aside>
+    <button
+      v-if="mobilePanel"
+      class="studio-panel-backdrop"
+      type="button"
+      :aria-label="mobilePanel === 'conversations' ? '关闭会话列表' : '关闭生成参数'"
+      @click="mobilePanel = null"
+    ></button>
   </div>
 
   <n-modal v-model:show="templateManagerOpen" preset="card" title="管理创作风格模板" class="dialog-card">

@@ -706,6 +706,53 @@ test('new conversations keep the composer visible and studio panels inside the v
   await expect(composer).toBeInViewport()
 })
 
+test('mobile navigation and studio panels remain reachable without horizontal overflow', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await mockApi(page, true, { multipleConversations: true, multipleModels: true })
+  await page.goto('/studio')
+
+  const noHorizontalOverflow = () => page.evaluate(
+    () => document.documentElement.scrollWidth <= window.innerWidth,
+  )
+  await expect.poll(noHorizontalOverflow).toBe(true)
+
+  await page.getByRole('button', { name: '打开主导航' }).click()
+  await expect(page.locator('.main-nav')).toHaveClass(/open/)
+  await page.getByRole('link', { name: /Provider/ }).click()
+  await expect(page.getByRole('heading', { name: '我的 Provider' })).toBeVisible()
+  await expect.poll(noHorizontalOverflow).toBe(true)
+
+  await page.getByRole('button', { name: '打开主导航' }).click()
+  await page.getByRole('link', { name: /创作台/ }).click()
+  await page.getByRole('button', { name: /会话$/ }).click()
+  await expect(page.locator('.conversation-rail')).toHaveClass(/open/)
+  await expect.poll(() => page.locator('.conversation-rail').evaluate(
+    (panel) => Math.round(panel.getBoundingClientRect().left),
+  )).toBe(0)
+  await expect(page.locator('.conversation-rail').getByRole('button', { name: '关闭会话列表' })).toBeVisible()
+  await page.locator('.conversation-item').filter({ hasText: secondConversation.title }).click()
+  await expect(page.locator('.conversation-rail')).not.toHaveClass(/open/)
+
+  await page.getByRole('button', { name: /参数$/ }).click()
+  await expect(page.locator('.parameter-panel')).toHaveClass(/open/)
+  await expect.poll(() => page.locator('.parameter-panel').evaluate(
+    (panel) => Math.round(panel.getBoundingClientRect().right),
+  )).toBe(390)
+  await expect(page.locator('.parameter-panel').getByText('目标分辨率')).toBeVisible()
+  await page.locator('.parameter-panel').getByRole('button', { name: '关闭生成参数' }).click()
+  await expect(page.locator('.parameter-panel')).not.toHaveClass(/open/)
+  await expect.poll(() => page.locator('.parameter-panel').evaluate(
+    (panel) => Math.round(panel.getBoundingClientRect().left),
+  )).toBe(390)
+
+  await expect(page.locator('.composer')).toBeInViewport()
+  await expect(page.locator('.composer textarea')).toBeEditable()
+  await expect.poll(noHorizontalOverflow).toBe(true)
+
+  await page.setViewportSize({ width: 412, height: 915 })
+  await expect.poll(noHorizontalOverflow).toBe(true)
+})
+
 test('messages show timestamps and live generation elapsed time', async ({ page }) => {
   await mockApi(page, true, { slowTask: true })
   await page.goto('/studio')

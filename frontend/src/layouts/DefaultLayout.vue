@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { NButton, NInput, NModal, NSelect, useDialog, useMessage } from 'naive-ui'
 import { useAuthStore } from '@/stores/auth'
@@ -14,6 +14,7 @@ const message = useMessage()
 const dialog = useDialog()
 const accountWrap = ref<HTMLElement | null>(null)
 const accountOpen = ref(false)
+const mobileNavOpen = ref(false)
 const profileOpen = ref(false)
 const profileTheme = ref<ThemePreference>(auth.user?.themePreference ?? 'system')
 const savingProfile = ref(false)
@@ -41,6 +42,11 @@ const navigation = computed(() => [
     : []),
 ])
 
+watch(() => route.fullPath, () => {
+  mobileNavOpen.value = false
+  accountOpen.value = false
+})
+
 onMounted(() => {
   document.addEventListener('pointerdown', closeAccountOutside)
   document.addEventListener('keydown', closeAccountOnEscape)
@@ -56,7 +62,9 @@ function closeAccountOutside(event: PointerEvent) {
 }
 
 function closeAccountOnEscape(event: KeyboardEvent) {
-  if (event.key === 'Escape') accountOpen.value = false
+  if (event.key !== 'Escape') return
+  accountOpen.value = false
+  mobileNavOpen.value = false
 }
 
 function openProfile() {
@@ -135,6 +143,16 @@ function confirmLogout() {
 <template>
   <div class="app-shell">
     <button
+      class="mobile-nav-trigger"
+      type="button"
+      aria-label="打开主导航"
+      aria-controls="main-navigation"
+      :aria-expanded="mobileNavOpen"
+      @click="mobileNavOpen = true"
+    >
+      <span aria-hidden="true">☰</span>
+    </button>
+    <button
       class="app-theme-toggle"
       :class="{ 'studio-theme-toggle': route.path === '/studio' }"
       type="button"
@@ -145,7 +163,8 @@ function confirmLogout() {
       <span aria-hidden="true">{{ theme.resolved === 'dark' ? '☀' : '☾' }}</span>
       <span>{{ theme.resolved === 'dark' ? 'Light' : 'Dark' }}</span>
     </button>
-    <aside class="main-nav">
+    <aside id="main-navigation" class="main-nav" :class="{ open: mobileNavOpen }">
+      <button class="mobile-nav-close" type="button" aria-label="关闭主导航" @click="mobileNavOpen = false">×</button>
       <div class="brand-mark">A</div>
       <nav class="nav-items" aria-label="主导航">
         <router-link
@@ -155,6 +174,7 @@ function confirmLogout() {
           class="nav-button"
           :class="{ active: route.path === item.to }"
           :title="item.label"
+          @click="mobileNavOpen = false"
         >
           <span class="nav-icon">{{ item.icon }}</span>
           <span>{{ item.label }}</span>
@@ -179,6 +199,13 @@ function confirmLogout() {
         </div>
       </div>
     </aside>
+    <button
+      v-if="mobileNavOpen"
+      class="mobile-nav-backdrop"
+      type="button"
+      aria-label="关闭主导航"
+      @click="mobileNavOpen = false"
+    ></button>
     <main class="route-content"><router-view /></main>
   </div>
 
