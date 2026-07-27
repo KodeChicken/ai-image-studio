@@ -337,6 +337,19 @@ function imageDownloadName(id: string, mimeType: string) {
   return `ai-image-studio-${id}.${extension}`
 }
 
+function visibleMessageAssets(item: ConversationMessage) {
+  const relationType = item.role === 'user'
+    ? 'attachment'
+    : item.role === 'assistant'
+      ? 'generated'
+      : null
+  return relationType ? item.assets.filter((asset) => asset.relationType === relationType) : []
+}
+
+function messageImageLabel(item: ConversationMessage) {
+  return item.role === 'user' ? '参考图' : '生成图片'
+}
+
 function updateParameterPanelBounds() {
   viewportWidth.value = window.innerWidth
   parameterPanelWidth.value = Math.min(parameterPanelWidth.value, parameterPanelMaxWidth.value)
@@ -890,15 +903,15 @@ async function scrollBottom() {
               >{{ retryingTaskId === item.taskId ? '重试中' : '重试' }}</button>
             </div>
             <div v-if="item.status === 'streaming'" class="streaming-line"><i></i><span>{{ taskStatusWithElapsed }}</span></div>
-            <div v-if="item.assets.length" class="message-images">
-              <figure v-for="asset in item.assets" :key="asset.id" class="message-image-item">
+            <div v-if="visibleMessageAssets(item).length" class="message-images">
+              <figure v-for="asset in visibleMessageAssets(item)" :key="asset.id" class="message-image-item">
                 <button
                   type="button"
                   class="message-image-button"
-                  aria-label="放大生成图片"
-                  @click="openImagePreview(asset.contentUrl, '生成图片', `${asset.width} × ${asset.height} · ${asset.mimeType}`)"
+                  :aria-label="`放大${messageImageLabel(item)}`"
+                  @click="openImagePreview(asset.contentUrl, messageImageLabel(item), `${asset.width} × ${asset.height} · ${asset.mimeType}`)"
                 >
-                  <img :src="asset.contentUrl" :alt="`生成图片 ${asset.id}`" />
+                  <img :src="asset.contentUrl" :alt="`${messageImageLabel(item)} ${asset.id}`" />
                 </button>
                 <figcaption class="message-image-meta">
                   <span>{{ asset.width }} × {{ asset.height }} · {{ asset.mimeType }}</span>

@@ -753,6 +753,19 @@ try {
     ) {
         throw 'Multi-turn follow-up did not use the previous generated image and text context'
     }
+    $conversationDetail = Invoke-RestMethod `
+        -Uri ("http://127.0.0.1:3310/api/v1/conversations/{0}" -f $second.Conversation.id) `
+        -WebSession $session
+    $followUpUserMessage = @($conversationDetail.messages | Where-Object id -eq $followUpTask.userMessageId)[0]
+    $followUpAssistantMessage = @($conversationDetail.messages | Where-Object id -eq $followUpTask.assistantMessageId)[0]
+    if (
+        @($followUpUserMessage.assets).Count -ne 1 -or
+        $followUpUserMessage.assets[0].relationType -ne 'reference' -or
+        @($followUpAssistantMessage.assets).Count -ne 1 -or
+        $followUpAssistantMessage.assets[0].relationType -ne 'generated'
+    ) {
+        throw 'Conversation detail did not preserve message image relation types'
+    }
     $storedPrompt = (docker exec $containerName `
             psql -U studio_test -d studio_test -tAc `
             ("SELECT prompt FROM image_tasks WHERE id = '{0}'" -f $followUpTask.id)) -join "`n"

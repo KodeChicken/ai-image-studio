@@ -71,9 +71,17 @@ pub struct ConversationMessage {
     pub task_started_at: Option<chrono::DateTime<chrono::Utc>>,
     pub task_finished_at: Option<chrono::DateTime<chrono::Utc>>,
     #[sqlx(skip)]
-    pub assets: Vec<ImageAssetSummary>,
+    pub assets: Vec<MessageImageAssetSummary>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageImageAssetSummary {
+    #[serde(flatten)]
+    pub asset: ImageAssetSummary,
+    pub relation_type: String,
 }
 
 async fn list(
@@ -387,7 +395,7 @@ async fn load_message_assets(
     state: &AppState,
     owner_id: Uuid,
     message_id: Uuid,
-) -> AppResult<Vec<ImageAssetSummary>> {
+) -> AppResult<Vec<MessageImageAssetSummary>> {
     #[derive(FromRow)]
     struct Row {
         id: Uuid,
@@ -395,10 +403,11 @@ async fn load_message_assets(
         width: Option<i32>,
         height: Option<i32>,
         file_size_bytes: i64,
+        relation_type: String,
     }
     let rows = sqlx::query_as::<_, Row>(
         r#"
-        SELECT a.id, a.mime_type, a.width, a.height, a.file_size_bytes
+        SELECT a.id, a.mime_type, a.width, a.height, a.file_size_bytes, ma.relation_type
         FROM message_image_assets ma
         JOIN image_assets a ON a.id = ma.asset_id
         WHERE ma.message_id = $1 AND a.owner_id = $2
@@ -411,13 +420,16 @@ async fn load_message_assets(
     .await?;
     Ok(rows
         .into_iter()
-        .map(|row| ImageAssetSummary {
-            id: row.id,
-            content_url: format!("/api/v1/image-assets/{}/content", row.id),
-            mime_type: row.mime_type,
-            width: row.width,
-            height: row.height,
-            file_size_bytes: row.file_size_bytes,
+        .map(|row| MessageImageAssetSummary {
+            asset: ImageAssetSummary {
+                id: row.id,
+                content_url: format!("/api/v1/image-assets/{}/content", row.id),
+                mime_type: row.mime_type,
+                width: row.width,
+                height: row.height,
+                file_size_bytes: row.file_size_bytes,
+            },
+            relation_type: row.relation_type,
         })
         .collect())
 }

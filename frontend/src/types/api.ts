@@ -68,6 +68,10 @@ export interface ImageAsset {
   fileSizeBytes: number
 }
 
+export interface MessageImageAsset extends ImageAsset {
+  relationType: 'attachment' | 'reference' | 'generated'
+}
+
 export interface Conversation {
   id: string
   title: string
@@ -95,7 +99,7 @@ export interface ConversationMessage {
   taskRetryCount: number | null
   taskStartedAt: string | null
   taskFinishedAt: string | null
-  assets: ImageAsset[]
+  assets: MessageImageAsset[]
   createdAt: string
   updatedAt: string
 }

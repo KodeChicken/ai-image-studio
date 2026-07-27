@@ -177,6 +177,7 @@ async function mockApi(
     rejectedTask?: boolean
     messageCreationFailure?: boolean
     multipleConversations?: boolean
+    automaticReferenceInHistory?: boolean
     authUser?: typeof user
     includeTextModel?: boolean
     slowTask?: boolean
@@ -386,7 +387,16 @@ async function mockApi(
             width: 1,
             height: 1,
             fileSizeBytes: 68,
-          })),
+            relationType: 'attachment',
+          })).concat(options.automaticReferenceInHistory && messageSequence > 1 ? [{
+            id: `73000000-0000-4000-8000-${String(messageSequence - 1).padStart(12, '0')}`,
+            contentUrl: '/mock/generated.png',
+            mimeType: 'image/png',
+            width: 1024,
+            height: 1024,
+            fileSizeBytes: 1024,
+            relationType: 'reference',
+          }] : []),
           createdAt: '2026-07-21T10:00:00Z',
           updatedAt: '2026-07-21T10:00:00Z',
         },
@@ -412,6 +422,7 @@ async function mockApi(
               width: 1024,
               height: 1024,
               fileSizeBytes: 1024,
+              relationType: 'generated',
             }],
           createdAt: '2026-07-21T10:00:01Z',
           updatedAt: '2026-07-21T10:00:01Z',
@@ -1194,6 +1205,23 @@ test('message branches can continue, switch and regenerate without flattening hi
   }))
   await expect(page.locator('.composer textarea')).toHaveValue('尚未发送的草稿')
   await expect(page.getByText('分支 3 / 3')).toBeVisible()
+})
+
+test('historical user messages hide the image automatically carried from the previous generation', async ({ page }) => {
+  await mockApi(page, true, { automaticReferenceInHistory: true })
+  await page.goto('/studio')
+
+  await page.locator('.composer textarea').fill('建立第一版画面')
+  await page.locator('.send-button').click()
+  await expect(page.getByText('建立第一版画面', { exact: true })).toBeVisible()
+
+  await page.locator('.composer textarea').fill('保持主体，把背景改成雨夜')
+  await page.locator('.send-button').click()
+
+  const followUp = page.locator('.message-row.user').filter({ hasText: '保持主体，把背景改成雨夜' })
+  await expect(followUp).toBeVisible()
+  await expect(followUp.locator('.message-images')).toHaveCount(0)
+  await expect(page.locator('.message-row.assistant .message-images')).toHaveCount(2)
 })
 
 test('a model rejection explains the reason in the failed assistant message', async ({ page }) => {
