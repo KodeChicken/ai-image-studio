@@ -94,6 +94,38 @@ const geminiModel = {
   },
 }
 
+const gptImage2Model = {
+  ...model,
+  id: '20000000-0000-4000-8000-000000000004',
+  modelKey: 'gpt-image-2',
+  upstreamModelId: 'gpt-image-2',
+  displayName: 'GPT Image 2',
+  parameterSchema: {
+    parameters: {
+      aspect_ratio: {
+        type: 'enum',
+        default: 'auto',
+        options: ['auto', '1:1', '3:2', '2:3', '16:9', '9:16'],
+      },
+      size: {
+        type: 'enum',
+        default: 'auto',
+        options: ['auto', '1024x1024', '3840x2160', '2160x3840'],
+        allow_custom: true,
+        constraints: {
+          edgeMultiple: 16,
+          maxEdge: 3840,
+          minPixels: 655360,
+          maxPixels: 8294400,
+          maxAspectRatio: 3,
+        },
+      },
+      quality: { type: 'enum', default: 'auto', options: ['auto', 'high'] },
+      n: { type: 'integer', default: 1, min: 1, max: 4 },
+    },
+  },
+}
+
 const textModel = {
   ...model,
   id: '20000000-0000-4000-8000-000000000003',
@@ -172,6 +204,7 @@ async function mockApi(
   options: {
     disconnectEventStreamOnce?: boolean
     multipleModels?: boolean
+    customSizeModel?: boolean
     cancellableTask?: boolean
     retryableTask?: boolean
     rejectedTask?: boolean
@@ -306,6 +339,7 @@ async function mockApi(
       return fulfill([
         model,
         ...(options.multipleModels ? [geminiModel] : []),
+        ...(options.customSizeModel ? [gptImage2Model] : []),
         ...(options.includeTextModel ? [textModel] : []),
       ])
     }
@@ -815,6 +849,16 @@ test('messages show timestamps and live generation elapsed time', async ({ page 
   await expect(imageDialog.getByRole('button', { name: '关闭图片预览' })).toBeVisible()
   await expect.poll(async () => (await imageDialog.locator('img').boundingBox())?.height ?? 0)
     .toBeGreaterThan(generatedImageBox!.height)
+  await imageDialog.getByRole('button', { name: '裁剪缩放' }).click()
+  await expect(imageDialog.getByText('裁剪与缩放', { exact: true })).toBeVisible()
+  await expect(imageDialog.locator('.cropper-container')).toBeVisible()
+  await expect(imageDialog.getByText('拖动画面调整位置，滚轮或双指可缩放。导出的文件不会覆盖原图。')).toBeVisible()
+  const croppedDownloadStarted = page.waitForEvent('download')
+  await imageDialog.getByRole('button', { name: '导出成品' }).click()
+  expect((await croppedDownloadStarted).suggestedFilename()).toBe(
+    'ai-image-studio-73000000-0000-4000-8000-000000000001-1024x1024.png',
+  )
+  await imageDialog.getByRole('button', { name: '返回预览' }).click()
   await imageDialog.getByRole('button', { name: '关闭图片预览' }).click()
   await expect(imageDialog).toHaveCount(0)
 
@@ -983,6 +1027,37 @@ test('advanced image parameters follow model, format and edit visibility rules',
     buffer: Buffer.from('reference'),
   })
   await expect(panel.locator('label').filter({ hasText: '输入图片保真度' })).toBeVisible()
+})
+
+test('aspect ratio and target resolution stay linked for custom-size models', async ({ page }) => {
+  await mockApi(page, true, { customSizeModel: true })
+  await page.goto('/studio')
+
+  const panel = page.locator('.parameter-panel')
+  const modelSelect = panel.locator('label').filter({ hasText: '生图模型' }).locator('.n-select')
+  await modelSelect.click()
+  await page.getByText(gptImage2Model.displayName, { exact: true }).last().click()
+
+  const aspect = panel.locator('.aspect-ratio-select')
+  const size = panel.locator('.target-resolution-select')
+  await aspect.locator('.n-base-selection').first().click()
+  await page.getByText('16:9', { exact: true }).last().click()
+  await size.locator('.n-base-selection').first().click()
+  await expect(page.getByText('3840x2160', { exact: true }).last()).toBeVisible()
+  await expect(page.getByText('2160x3840', { exact: true })).toHaveCount(0)
+  await page.getByText('3840x2160', { exact: true }).last().click()
+
+  await aspect.locator('.n-base-selection').first().click()
+  await page.locator('.n-base-select-option:visible').filter({ hasText: 'Auto（默认）' }).first().click()
+  await expect(size.locator('.n-base-selection-label')).toContainText('Auto')
+  await size.locator('.n-base-selection').first().click()
+  await page.getByText('2160x3840', { exact: true }).last().click()
+  await expect(aspect.locator('.n-base-selection-label')).toContainText('9:16')
+
+  await size.locator('.n-base-selection').first().click()
+  await page.getByText('自定义尺寸…', { exact: true }).last().click()
+  await expect(panel.getByText('自定义尺寸', { exact: true })).toBeVisible()
+  await expect(panel.getByText('当前数值不符合模型的边长、像素数或 16 倍数限制。')).toHaveCount(0)
 })
 
 test('generation parameters are remembered per model across conversations and reloads', async ({ page }) => {

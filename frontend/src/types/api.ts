@@ -34,6 +34,13 @@ export interface ParameterDefinition {
   step?: number
   options?: string[]
   allow_custom?: boolean
+  constraints?: {
+    edgeMultiple?: number
+    maxEdge?: number
+    minPixels?: number
+    maxPixels?: number
+    maxAspectRatio?: number
+  }
   supported?: boolean
   operations?: Array<'generation' | 'edit'>
   visible_when?: Record<string, unknown | unknown[]>

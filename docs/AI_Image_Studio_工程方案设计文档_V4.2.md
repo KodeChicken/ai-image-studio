@@ -428,6 +428,10 @@ Authorization: Bearer <current-user-provider-key>
 
 前端将 `size` 标注为“目标分辨率”，因为部分兼容 Provider 会接受该参数却返回不同的实际像素。平台先把目标尺寸原样发送给 Provider；对于 OpenAI Compatible 的 GPT Image 2，用户选择明确尺寸即表示要求最终文件具备该像素。若下载后解码尺寸不符，后端按与 `sub2api-imagegen --exact-size` 一致的语义，使用 Lanczos3 居中裁切重采样后再持久化；`size=auto` 不执行该处理。前端必须提示重采样可能发生且不会增加模型原生细节；`image_results.metadata` 记录 `resized`、`resizeMethod`、`sourceWidth`、`sourceHeight` 和 `requestedSize`，不得把重采样结果伪装成上游原生 4K。
 
+宽高比和目标分辨率必须联动，不能产生 `16:9 + 2160x3840` 这类矛盾组合。选择明确的 `WIDTHxHEIGHT` 时，目标分辨率是权威值，前端自动展示其约分后的实际宽高比，并不再向 OpenAI Compatible Provider 重复发送 `aspect_ratio`；切换宽高比时，分辨率列表只展示同比例预设，已有尺寸不匹配则回到 `Auto`。`1k/2k/4k` 等 Provider 原生档位不属于像素尺寸，仍需与 `aspect_ratio` 同时传递。对于声明 `allow_custom=true` 的模型，创作台提供“固定宽度/固定高度”两种录入方式：用户输入一条边，另一条边只列出满足模型 `edgeMultiple`、`maxEdge`、总像素和最大宽高比约束的可选值；前后端使用同一组 Schema 约束校验。
+
+生成完成后的图片预览和历史作品预览提供“裁剪缩放”入口。第一阶段由浏览器端完成交互和文件导出：裁剪框比例由用户填写的输出宽高决定，支持拖动画面、滚轮或双指缩放以及高质量 Canvas 重采样；操作始终读取持久化原图，不覆盖原图，也不修改 `image_results` 或历史作品记录。导出文件仅下载到用户设备，界面必须明确提示这一点。若后续需要把裁剪成品纳入历史作品，再单独增加派生资产关系和服务端持久化，不能用覆盖原图的方式实现。
+
 平台对浏览器的统一 SSE 与 OpenAI Compatible Provider 的原生 SSE 均默认开启。OpenAI Adapter 无论 `partial_images` 是否为 0，都会发送 `stream=true` 和 `Accept: text/event-stream`；`partial_images=0` 只表示不请求中间预览，不再切换为普通 JSON 响应。用户设置为 1～3 时，Adapter 增量解析 `image_generation.partial_image`/`image_edit.partial_image`，局部帧临时写入当前 Local/S3 存储并通过鉴权地址发送 `image.partial` 事件，5 分钟后删除。只有明确的 `image_generation.completed`/`image_edit.completed` 完成事件或规范化最终 `data` 响应才能作为正式 `image_assets`/`image_results` 结果持久化，不得把最后一张局部预览误认为最终结果。数据库不保存 Base64、公开 URL 或临时签名 URL。`stream` 是 Adapter 固定的传输策略，不作为可任意透传的模型参数展示，避免与平台面向浏览器的 SSE 开关混淆。
 
 Schema 合并顺序：

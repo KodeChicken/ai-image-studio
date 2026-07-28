@@ -217,6 +217,13 @@ body.parameter-panel-resizing * { cursor: col-resize !important; }
 .parameter-hint { font-size: 10px; line-height: 1.45; text-transform: none; }
 .parameter-group label, .parameter-field, .parameter-group .n-select, .parameter-group .n-input, .parameter-group .n-input-number { min-width: 0; width: 100%; }
 .parameter-group.advanced summary { display: flex; justify-content: space-between; cursor: pointer; font-size: 13px; font-weight: 700; }
+.custom-size-editor { display: grid; gap: 12px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); }
+.custom-size-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.custom-size-heading strong { color: var(--text); font-size: 12px; }
+.custom-size-heading button { display: grid; width: 24px; height: 24px; place-items: center; padding: 0 0 2px; border: 0; border-radius: 50%; cursor: pointer; color: var(--muted); background: transparent; font-size: 18px; }
+.custom-size-heading button:hover { color: var(--text); background: var(--panel); }
+.custom-size-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.custom-size-error { color: var(--danger); font-size: 10px; line-height: 1.45; }
 .parameter-group.advanced summary span { color: var(--muted); font-weight: 400; }
 .advanced-parameter-grid { display: grid; grid-column: 1 / -1; gap: 14px; margin-top: 14px; }
 .inline-control { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; }
@@ -229,6 +236,29 @@ body.parameter-panel-resizing * { cursor: col-resize !important; }
 .template-list button small { color: var(--muted); }
 .template-editor-heading { display: grid; gap: 4px; padding-bottom: 13px; border-bottom: 1px solid var(--border); }
 .template-editor-heading strong { font-size: 14px; }
+.image-editor-modal { display: grid; width: min(1120px, calc(100vw - 40px)); max-height: calc(100vh - 40px); overflow: hidden; border: 1px solid rgba(255, 255, 255, .12); border-radius: 8px; color: white; background: #17151b; box-shadow: 0 28px 90px rgba(0, 0, 0, .55); }
+.image-editor-modal > header { display: flex; min-height: 58px; align-items: center; justify-content: space-between; gap: 20px; padding: 10px 14px 10px 18px; border-bottom: 1px solid rgba(255, 255, 255, .1); }
+.image-editor-modal > header div { display: grid; gap: 2px; min-width: 0; }
+.image-editor-modal > header strong { font-size: 14px; }
+.image-editor-modal > header span { overflow: hidden; color: rgba(255, 255, 255, .58); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.image-editor-modal > header button { display: grid; width: 34px; height: 34px; flex: none; place-items: center; padding: 0 0 3px; border: 1px solid rgba(255, 255, 255, .16); border-radius: 50%; cursor: pointer; color: white; background: rgba(255, 255, 255, .06); font-size: 23px; line-height: 1; }
+.image-editor-modal > header button:hover { background: rgba(255, 255, 255, .14); }
+.image-preview-stage { display: grid; min-height: 0; place-items: center; overflow: auto; padding: 18px; background: #0e0d10; }
+.image-preview-stage img { display: block; width: auto; max-width: 100%; height: auto; max-height: calc(100vh - 170px); object-fit: contain; }
+.image-editor-modal > footer { display: flex; min-height: 58px; align-items: center; justify-content: space-between; gap: 18px; padding: 10px 16px; border-top: 1px solid rgba(255, 255, 255, .1); }
+.image-editor-modal > footer > span { color: rgba(255, 255, 255, .62); font-size: 10px; }
+.image-editor-modal > footer > div { display: flex; align-items: center; gap: 8px; }
+.image-editor-modal > footer a { padding: 6px 10px; border-radius: 6px; color: rgba(255, 255, 255, .82); font-size: 11px; }
+.image-editor-modal > footer a:hover { background: rgba(255, 255, 255, .1); }
+.image-crop-workspace { display: grid; min-height: 0; grid-template-columns: minmax(0, 1fr) 270px; }
+.image-crop-canvas { min-width: 0; min-height: 520px; overflow: hidden; background-color: #0e0d10; background-image: linear-gradient(45deg, #18161b 25%, transparent 25%), linear-gradient(-45deg, #18161b 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #18161b 75%), linear-gradient(-45deg, transparent 75%, #18161b 75%); background-position: 0 0, 0 8px, 8px -8px, -8px 0; background-size: 16px 16px; }
+.image-crop-canvas img { display: block; max-width: 100%; }
+.image-crop-controls { display: grid; align-content: start; gap: 18px; padding: 18px; border-left: 1px solid rgba(255, 255, 255, .1); background: #1d1a21; }
+.image-crop-controls label { display: grid; gap: 7px; color: rgba(255, 255, 255, .68); font-size: 11px; }
+.image-crop-controls > small { color: rgba(255, 255, 255, .52); font-size: 10px; line-height: 1.6; }
+.image-crop-size-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.image-crop-zoom { padding-top: 4px; }
+.image-crop-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .template-editor-heading span { color: var(--muted); font-size: 11px; line-height: 1.5; }
 
 @container parameter-panel (min-width: 500px) {
@@ -407,6 +437,12 @@ td strong, td small { display: block; } td small { margin-top: 4px; color: var(-
   .image-lightbox { max-width: calc(100vw - 24px); max-height: calc(100dvh - 24px); }
   .image-lightbox > img { max-width: calc(100vw - 24px); height: auto; max-height: calc(100dvh - 110px); }
   .image-lightbox footer { align-items: flex-start; flex-direction: column; gap: 3px; }
+  .image-editor-modal { width: calc(100vw - 16px); max-height: calc(100dvh - 16px); }
+  .image-crop-workspace { grid-template-columns: 1fr; overflow-y: auto; }
+  .image-crop-canvas { min-height: min(52dvh, 460px); }
+  .image-crop-controls { border-top: 1px solid rgba(255, 255, 255, .1); border-left: 0; }
+  .image-editor-modal > footer { align-items: flex-start; flex-direction: column; }
+  .image-editor-modal > footer > div { width: 100%; justify-content: flex-end; }
 }
 
 @media (max-width: 560px) {
@@ -419,6 +455,7 @@ td strong, td small { display: block; } td small { margin-top: 4px; color: var(-
   .message-timeline { padding: 22px 12px; }
   .studio-empty { margin-top: 12vh; }
   .studio-empty h2 { font-size: 20px; }
+  .custom-size-fields, .image-crop-size-fields { grid-template-columns: 1fr; }
   .branch-anchor { align-items: flex-start; }
   .template-layout { grid-template-columns: 1fr; }
   .test-parameter-grid { grid-template-columns: 1fr; padding: 12px; }

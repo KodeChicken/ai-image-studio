@@ -1193,7 +1193,43 @@ pub(crate) fn validate_task_parameters(
             )));
         }
     }
+    validate_aspect_ratio_matches_size(values)?;
     Ok(())
+}
+
+fn validate_aspect_ratio_matches_size(values: &Map<String, Value>) -> AppResult<()> {
+    let Some(aspect_ratio) = values.get("aspect_ratio").and_then(Value::as_str) else {
+        return Ok(());
+    };
+    let Some(size) = values.get("size").and_then(Value::as_str) else {
+        return Ok(());
+    };
+    if aspect_ratio.eq_ignore_ascii_case("auto") || size.eq_ignore_ascii_case("auto") {
+        return Ok(());
+    }
+    let Some((aspect_width, aspect_height)) =
+        aspect_ratio.split_once(':').and_then(|(width, height)| {
+            Some((width.parse::<u64>().ok()?, height.parse::<u64>().ok()?))
+        })
+    else {
+        return Ok(());
+    };
+    let Some((width, height)) = size.split_once('x').and_then(|(width, height)| {
+        Some((width.parse::<u64>().ok()?, height.parse::<u64>().ok()?))
+    }) else {
+        return Ok(());
+    };
+    let matches = width
+        .checked_mul(aspect_height)
+        .zip(height.checked_mul(aspect_width))
+        .is_some_and(|(left, right)| left == right);
+    if matches {
+        Ok(())
+    } else {
+        Err(AppError::Validation(
+            "aspect_ratio does not match size".to_owned(),
+        ))
+    }
 }
 
 fn valid_custom_image_size(value: &str, definition: &Value) -> bool {
@@ -2370,6 +2406,59 @@ mod tests {
         assert!(
             validate_task_parameters(&json!({ "size": "3840x3840" }), &schema, "generation")
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn rejects_aspect_ratio_and_size_mismatches() {
+        let schema = json!({
+            "parameters": {
+                "aspect_ratio": {
+                    "type": "enum",
+                    "options": ["auto", "16:9", "9:16"]
+                },
+                "size": {
+                    "type": "enum",
+                    "options": ["auto", "3840x2160", "2160x3840"]
+                }
+            }
+        });
+        assert!(
+            validate_task_parameters(
+                &json!({ "aspect_ratio": "9:16", "size": "2160x3840" }),
+                &schema,
+                "generation"
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_task_parameters(
+                &json!({ "aspect_ratio": "16:9", "size": "2160x3840" }),
+                &schema,
+                "generation"
+            )
+            .is_err()
+        );
+        assert!(
+            validate_task_parameters(
+                &json!({ "aspect_ratio": "auto", "size": "2160x3840" }),
+                &schema,
+                "generation"
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_task_parameters(
+                &json!({ "aspect_ratio": "16:9", "size": "4k" }),
+                &json!({
+                    "parameters": {
+                        "aspect_ratio": { "type": "enum", "options": ["16:9"] },
+                        "size": { "type": "enum", "options": ["4k"] }
+                    }
+                }),
+                "generation"
+            )
+            .is_ok()
         );
     }
 

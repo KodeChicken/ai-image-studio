@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { NButton, NInputNumber, NModal, NSelect, useMessage } from 'naive-ui'
+import { NButton, NInputNumber, NSelect, useMessage } from 'naive-ui'
 import { api } from '@/api/client'
+import ImageCropModal, { type CropPreviewImage } from '@/components/ImageCropModal.vue'
 import type { Conversation, ImageModel, Provider } from '@/types/api'
 
 interface HistoryItem {
@@ -36,7 +37,7 @@ const height = ref<number | null>(null)
 const loading = ref(false)
 const message = useMessage()
 const imagePreviewOpen = ref(false)
-const imagePreview = ref<{ contentUrl: string; label: string; metadata: string } | null>(null)
+const imagePreview = ref<CropPreviewImage | null>(null)
 const modelOptions = computed(() =>
   models.value
     .filter((item) => !providerId.value || item.providerId === providerId.value)
@@ -103,9 +104,13 @@ function dateBoundary(value: string, nextDay: boolean) {
 
 function openImagePreview(item: HistoryItem) {
   imagePreview.value = {
+    id: item.assetId,
     contentUrl: item.contentUrl,
     label: item.prompt,
     metadata: `${item.providerName} · ${item.modelName} · ${item.width} × ${item.height}`,
+    mimeType: item.mimeType,
+    width: item.width,
+    height: item.height,
   }
   imagePreviewOpen.value = true
 }
@@ -148,14 +153,5 @@ function imageDownloadName(item: HistoryItem) {
     <div v-else class="large-empty panel"><span>▦</span><h2>还没有历史作品</h2><p>完成的生图会自动出现在这里。</p></div>
   </div>
 
-  <n-modal v-model:show="imagePreviewOpen" :mask-closable="true">
-    <section v-if="imagePreview" class="image-lightbox" role="dialog" aria-modal="true" :aria-label="imagePreview.label">
-      <button class="image-lightbox-close" type="button" aria-label="关闭图片预览" @click="imagePreviewOpen = false">×</button>
-      <img :src="imagePreview.contentUrl" :alt="imagePreview.label" />
-      <footer>
-        <strong>{{ imagePreview.label }}</strong>
-        <span>{{ imagePreview.metadata }}</span>
-      </footer>
-    </section>
-  </n-modal>
+  <image-crop-modal v-model:show="imagePreviewOpen" :image="imagePreview" />
 </template>

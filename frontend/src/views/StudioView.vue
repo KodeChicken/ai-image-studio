@@ -2,12 +2,15 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { NButton, NInput, NInputNumber, NModal, NSelect, NSwitch, useMessage } from 'naive-ui'
 import { api, streamPost, streamTask } from '@/api/client'
+import ImageCropModal, { type CropPreviewImage } from '@/components/ImageCropModal.vue'
+import ImageSizeControl from '@/components/ImageSizeControl.vue'
 import {
   branchPath,
   branchPosition,
   latestDescendantId,
   latestMessageId,
 } from '@/lib/conversationBranches'
+import { parseImageSize } from '@/lib/imageSizing'
 import type {
   Conversation,
   ConversationDetail,
@@ -70,7 +73,7 @@ const editingTemplateId = ref<string | null>(null)
 const templateTitle = ref('')
 const templatePrompt = ref('')
 const imagePreviewOpen = ref(false)
-const imagePreview = ref<{ contentUrl: string; label: string; metadata: string } | null>(null)
+const imagePreview = ref<CropPreviewImage | null>(null)
 const mobilePanel = ref<'conversations' | 'parameters' | null>(null)
 const parameterPanelWidth = ref(340)
 const viewportWidth = ref(window.innerWidth)
@@ -130,10 +133,6 @@ const advancedParameters = computed(() =>
       !['aspect_ratio', 'size', 'quality', 'n'].includes(name) && isParameterVisible(name, definition),
   ),
 )
-const aspectRatioOptions = computed(() =>
-  enumOptions('aspect_ratio', ['auto', '1:1', '16:9', '9:16', '3:2', '2:3']),
-)
-const sizeOptions = computed(() => enumOptions('size', ['auto', '1024x1024', '1536x1024', '1024x1536']))
 const qualityOptions = computed(() => enumOptions('quality', ['auto', 'low', 'medium', 'high']))
 const taskStatusWithElapsed = computed(
   () => `${taskStage.value || '模型正在生成'} · ${formatDuration(taskElapsedSeconds.value)}`,
@@ -327,8 +326,21 @@ function removeFile(index: number) {
   if (removed) URL.revokeObjectURL(removed.previewUrl)
 }
 
-function openImagePreview(contentUrl: string, label: string, metadata: string) {
-  imagePreview.value = { contentUrl, label, metadata }
+function openImagePreview(asset: ImageAsset, label: string) {
+  imagePreview.value = {
+    id: asset.id,
+    contentUrl: asset.contentUrl,
+    label,
+    metadata: `${asset.width} × ${asset.height} · ${asset.mimeType}`,
+    mimeType: asset.mimeType,
+    width: asset.width,
+    height: asset.height,
+  }
+  imagePreviewOpen.value = true
+}
+
+function openPartialPreview(contentUrl: string, label: string) {
+  imagePreview.value = { contentUrl, label, metadata: '最终原图仍在生成' }
   imagePreviewOpen.value = true
 }
 
@@ -642,11 +654,13 @@ async function regenerate(item: ConversationMessage) {
 }
 
 function cleanParameters(hasInputImages = files.value.length > 0) {
+  const exactSize = parseImageSize(parameters.size)
   return Object.fromEntries(
     Object.entries(parameters).filter(([name, value]) => {
       const definition = schema.value[name]
       return (
         definition !== undefined &&
+        !(name === 'aspect_ratio' && exactSize) &&
         isParameterVisible(name, definition, hasInputImages) &&
         value !== '' &&
         value !== null &&
@@ -909,7 +923,7 @@ async function scrollBottom() {
                   type="button"
                   class="message-image-button"
                   :aria-label="`放大${messageImageLabel(item)}`"
-                  @click="openImagePreview(asset.contentUrl, messageImageLabel(item), `${asset.width} × ${asset.height} · ${asset.mimeType}`)"
+                  @click="openImagePreview(asset, messageImageLabel(item))"
                 >
                   <img :src="asset.contentUrl" :alt="`${messageImageLabel(item)} ${asset.id}`" />
                 </button>
@@ -975,7 +989,7 @@ async function scrollBottom() {
                 type="button"
                 class="message-image-button"
                 :aria-label="`放大${partialPreview.label}`"
-                @click="openImagePreview(partialPreview.contentUrl, partialPreview.label, '最终原图仍在生成')"
+                @click="openPartialPreview(partialPreview.contentUrl, partialPreview.label)"
               >
                 <img :src="partialPreview.contentUrl" :alt="partialPreview.label" />
                 <span>{{ partialPreview.label }} · 最终原图仍在生成</span>
@@ -1042,8 +1056,15 @@ async function scrollBottom() {
         </section>
         <section class="parameter-group base-parameters">
           <h3>基础参数</h3>
-          <label>宽高比<n-select :value="selectValue(parameters.aspect_ratio)" :options="aspectRatioOptions" @update:value="value => setParameter('aspect_ratio', value)" /></label>
-          <label v-if="schema.size">目标分辨率<n-select :value="selectValue(parameters.size)" :options="sizeOptions" :tag="schema.size.allow_custom === true" filterable @update:value="value => setParameter('size', value)" /><small class="parameter-hint">明确尺寸时，若上游像素不符将居中裁切并高质量重采样；Auto 保留原图。</small></label>
+          <image-size-control
+            v-if="schema.size"
+            :aspect-ratio="stringValue(parameters.aspect_ratio) || 'auto'"
+            :size="stringValue(parameters.size) || 'auto'"
+            :aspect-definition="schema.aspect_ratio"
+            :size-definition="schema.size"
+            @update:aspect-ratio="value => setParameter('aspect_ratio', value)"
+            @update:size="value => setParameter('size', value)"
+          />
           <label v-if="schema.quality">质量<n-select :value="selectValue(parameters.quality)" :options="qualityOptions" @update:value="value => setParameter('quality', value)" /></label>
           <label v-if="schema.n">生成数量<n-input-number :value="numberValue(parameters.n)" :min="schema.n.min ?? 1" :max="schema.n.max ?? 10" @update:value="value => setParameter('n', value)" /></label>
           <div class="parameter-field"><span>创作风格</span>
@@ -1094,14 +1115,5 @@ async function scrollBottom() {
     </div>
   </n-modal>
 
-  <n-modal v-model:show="imagePreviewOpen" :mask-closable="true">
-    <section v-if="imagePreview" class="image-lightbox" role="dialog" aria-modal="true" :aria-label="imagePreview.label">
-      <button class="image-lightbox-close" type="button" aria-label="关闭图片预览" @click="imagePreviewOpen = false">×</button>
-      <img :src="imagePreview.contentUrl" :alt="imagePreview.label" />
-      <footer>
-        <strong>{{ imagePreview.label }}</strong>
-        <span>{{ imagePreview.metadata }}</span>
-      </footer>
-    </section>
-  </n-modal>
+  <image-crop-modal v-model:show="imagePreviewOpen" :image="imagePreview" />
 </template>
