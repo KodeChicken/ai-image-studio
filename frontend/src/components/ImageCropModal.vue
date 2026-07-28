@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import { NButton, NInputNumber, NModal, NSlider, useMessage } from 'naive-ui'
+import { NButton, NModal, useMessage } from 'naive-ui'
 import Cropper from 'cropperjs'
 import 'cropperjs/dist/cropper.css'
 
@@ -25,11 +25,10 @@ const cropImage = ref<HTMLImageElement | null>(null)
 const cropMode = ref(false)
 const outputWidth = ref<number | null>(null)
 const outputHeight = ref<number | null>(null)
-const zoom = ref(1)
-const minZoom = ref(0.1)
-const maxZoom = ref(4)
 const exporting = ref(false)
 let cropper: Cropper | null = null
+let minZoomRatio = 0.01
+let maxZoomRatio = 8
 
 const canCrop = computed(() => Boolean(
   props.image?.id
@@ -81,9 +80,9 @@ function initializeCropper() {
   destroyCropper()
   cropper = new Cropper(cropImage.value, {
     aspectRatio: outputWidth.value! / outputHeight.value!,
-    viewMode: 1,
+    viewMode: 0,
     dragMode: 'move',
-    autoCropArea: 1,
+    autoCropArea: 0.82,
     background: false,
     center: true,
     guides: true,
@@ -91,34 +90,38 @@ function initializeCropper() {
     zoomable: true,
     zoomOnTouch: true,
     zoomOnWheel: true,
-    cropBoxMovable: false,
-    cropBoxResizable: false,
+    cropBoxMovable: true,
+    cropBoxResizable: true,
+    minCropBoxWidth: 48,
+    minCropBoxHeight: 48,
     toggleDragModeOnDblclick: false,
     ready() {
       if (!cropper) return
       const imageData = cropper.getImageData()
       const initialZoom = imageData.naturalWidth > 0 ? imageData.width / imageData.naturalWidth : 1
-      minZoom.value = initialZoom
-      maxZoom.value = Math.max(initialZoom * 4, initialZoom + 1)
-      zoom.value = initialZoom
+      minZoomRatio = Math.max(initialZoom * 0.25, 0.01)
+      maxZoomRatio = Math.max(initialZoom * 8, initialZoom + 2)
     },
     zoom(event) {
-      zoom.value = event.detail.ratio
+      if (event.detail.ratio < minZoomRatio || event.detail.ratio > maxZoomRatio) {
+        event.preventDefault()
+      }
     },
   })
 }
 
-function setZoom(value: number) {
-  zoom.value = value
-  cropper?.zoomTo(value)
+function updateOutputDimension(edge: 'width' | 'height', event: Event) {
+  const input = event.target as HTMLInputElement
+  const digits = input.value.replace(/\D/g, '')
+  if (input.value !== digits) input.value = digits
+  const value = digits ? Number(digits) : null
+  if (edge === 'width') outputWidth.value = value
+  else outputHeight.value = value
 }
 
-function resetCrop() {
-  cropper?.reset()
-  if (!cropper) return
-  const imageData = cropper.getImageData()
-  const initialZoom = imageData.naturalWidth > 0 ? imageData.width / imageData.naturalWidth : minZoom.value
-  zoom.value = initialZoom
+function selectDimension(event: FocusEvent) {
+  const input = event.target as HTMLInputElement
+  input.select()
 }
 
 function leaveCropMode() {
@@ -199,7 +202,7 @@ function downloadBlob(blob: Blob, filename: string) {
       <header>
         <div>
           <strong>{{ cropMode ? '裁剪与缩放' : image.label }}</strong>
-          <span>{{ cropMode ? `输出比例 ${outputWidth || '—'}:${outputHeight || '—'}` : image.metadata }}</span>
+          <span>{{ cropMode ? `输出尺寸 ${outputWidth || '—'} × ${outputHeight || '—'}` : image.metadata }}</span>
         </div>
         <button type="button" aria-label="关闭图片预览" @click="close">×</button>
       </header>
@@ -209,17 +212,13 @@ function downloadBlob(blob: Blob, filename: string) {
           <img ref="cropImage" :src="image.contentUrl" :alt="image.label" @load="initializeCropper" />
         </div>
         <aside class="image-crop-controls">
+          <strong>输出尺寸</strong>
           <div class="image-crop-size-fields">
-            <label>输出宽度<n-input-number v-model:value="outputWidth" :min="16" :max="8192" :precision="0" /></label>
-            <label>输出高度<n-input-number v-model:value="outputHeight" :min="16" :max="8192" :precision="0" /></label>
+            <label>输出宽度<input :value="outputWidth ?? ''" type="text" inputmode="numeric" pattern="[0-9]*" aria-label="输出宽度" @input="updateOutputDimension('width', $event)" @focus="selectDimension" /></label>
+            <label>输出高度<input :value="outputHeight ?? ''" type="text" inputmode="numeric" pattern="[0-9]*" aria-label="输出高度" @input="updateOutputDimension('height', $event)" @focus="selectDimension" /></label>
           </div>
-          <small>拖动画面调整位置，滚轮或双指可缩放。导出的文件不会覆盖原图。</small>
-          <label class="image-crop-zoom">
-            缩放
-            <n-slider :value="zoom" :min="minZoom" :max="maxZoom" :step="0.01" @update:value="setZoom" />
-          </label>
+          <small v-if="!validOutput" class="image-crop-size-error">宽高需为 16-8192 的整数，且总像素不能超过 3355 万。</small>
           <div class="image-crop-actions">
-            <n-button @click="resetCrop">重置</n-button>
             <n-button @click="leaveCropMode">返回预览</n-button>
             <n-button type="primary" :loading="exporting" :disabled="!validOutput" @click="exportCrop">导出成品</n-button>
           </div>

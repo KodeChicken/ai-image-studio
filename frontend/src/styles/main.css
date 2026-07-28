@@ -256,11 +256,17 @@ body.parameter-panel-resizing * { cursor: col-resize !important; }
 .image-crop-canvas { min-width: 0; min-height: 520px; overflow: hidden; background-color: #0e0d10; background-image: linear-gradient(45deg, #18161b 25%, transparent 25%), linear-gradient(-45deg, #18161b 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #18161b 75%), linear-gradient(-45deg, transparent 75%, #18161b 75%); background-position: 0 0, 0 8px, 8px -8px, -8px 0; background-size: 16px 16px; }
 .image-crop-canvas img { display: block; max-width: 100%; }
 .image-crop-controls { display: grid; align-content: start; gap: 18px; padding: 18px; border-left: 1px solid rgba(255, 255, 255, .1); background: #1d1a21; }
+.image-crop-controls > strong { color: #fff; font-size: 13px; }
 .image-crop-controls label { display: grid; gap: 7px; color: rgba(255, 255, 255, .68); font-size: 11px; }
-.image-crop-controls > small { color: rgba(255, 255, 255, .52); font-size: 10px; line-height: 1.6; }
+.image-crop-controls > small { color: rgba(255, 255, 255, .58); font-size: 10px; line-height: 1.6; }
 .image-crop-size-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-.image-crop-zoom { padding-top: 4px; }
+.image-crop-size-fields input { width: 100%; min-width: 0; height: 44px; padding: 0 12px; border: 1px solid rgba(255, 255, 255, .2); border-radius: 8px; outline: 0; background: #f8f7fa; color: #242027; font: inherit; font-size: 14px; }
+.image-crop-size-fields input:focus { border-color: #9d6cff; box-shadow: 0 0 0 2px rgba(157, 108, 255, .22); }
+.image-crop-size-error { color: #ff9cab !important; }
 .image-crop-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.image-crop-canvas .cropper-face { cursor: move; }
+.image-crop-canvas .cropper-line { background-color: #9d6cff; opacity: .75; }
+.image-crop-canvas .cropper-point { width: 10px; height: 10px; border: 2px solid #fff; border-radius: 50%; background-color: #7c3aed; opacity: 1; }
 .template-editor-heading span { color: var(--muted); font-size: 11px; line-height: 1.5; }
 
 @container parameter-panel (min-width: 500px) {

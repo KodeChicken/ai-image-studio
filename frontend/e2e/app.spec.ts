@@ -863,12 +863,49 @@ test('messages show timestamps and live generation elapsed time', async ({ page 
     .toBeGreaterThan(generatedImageBox!.height)
   await imageDialog.getByRole('button', { name: '裁剪缩放' }).click()
   await expect(imageDialog.getByText('裁剪与缩放', { exact: true })).toBeVisible()
-  await expect(imageDialog.locator('.cropper-container')).toBeVisible()
-  await expect(imageDialog.getByText('拖动画面调整位置，滚轮或双指可缩放。导出的文件不会覆盖原图。')).toBeVisible()
+  const cropperContainer = imageDialog.locator('.cropper-container')
+  const cropperCanvas = imageDialog.locator('.cropper-canvas')
+  const cropBox = imageDialog.locator('.cropper-crop-box')
+  await expect(cropperContainer).toBeVisible()
+  await expect(imageDialog.locator('.image-crop-zoom')).toHaveCount(0)
+  await expect(imageDialog.locator('.n-input-number')).toHaveCount(0)
+
+  const canvasBeforeZoomOut = await cropperCanvas.boundingBox()
+  expect(canvasBeforeZoomOut).not.toBeNull()
+  await cropperContainer.hover()
+  await page.mouse.wheel(0, 120)
+  await expect.poll(async () => (await cropperCanvas.boundingBox())?.width ?? 0)
+    .toBeLessThan(canvasBeforeZoomOut!.width)
+
+  const cropBoxBeforeResize = await cropBox.boundingBox()
+  const resizeHandle = imageDialog.locator('.cropper-point.point-e')
+  const resizeHandleBox = await resizeHandle.boundingBox()
+  expect(cropBoxBeforeResize).not.toBeNull()
+  expect(resizeHandleBox).not.toBeNull()
+  await expect(resizeHandle).toHaveAttribute('data-cropper-action', 'e')
+  await page.mouse.move(resizeHandleBox!.x + resizeHandleBox!.width / 2, resizeHandleBox!.y + resizeHandleBox!.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(resizeHandleBox!.x + resizeHandleBox!.width / 2 - 40, resizeHandleBox!.y + resizeHandleBox!.height / 2)
+  await page.mouse.up()
+  await expect.poll(async () => (await cropBox.boundingBox())?.width ?? 0)
+    .toBeLessThan(cropBoxBeforeResize!.width)
+
+  const outputWidth = imageDialog.getByLabel('输出宽度')
+  const outputHeight = imageDialog.getByLabel('输出高度')
+  await outputWidth.click()
+  await expect.poll(() => outputWidth.evaluate((input) => ({
+    start: (input as HTMLInputElement).selectionStart,
+    end: (input as HTMLInputElement).selectionEnd,
+    length: (input as HTMLInputElement).value.length,
+  }))).toEqual({ start: 0, end: 4, length: 4 })
+  await outputWidth.fill('960')
+  await outputHeight.fill('128')
+  await expect(outputWidth).toHaveValue('960')
+  await expect(outputHeight).toHaveValue('128')
   const croppedDownloadStarted = page.waitForEvent('download')
   await imageDialog.getByRole('button', { name: '导出成品' }).click()
   expect((await croppedDownloadStarted).suggestedFilename()).toBe(
-    'ai-image-studio-73000000-0000-4000-8000-000000000001-1024x1024.png',
+    'ai-image-studio-73000000-0000-4000-8000-000000000001-960x128.png',
   )
   await imageDialog.getByRole('button', { name: '返回预览' }).click()
   await imageDialog.getByRole('button', { name: '关闭图片预览' }).click()
