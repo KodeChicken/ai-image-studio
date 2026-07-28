@@ -40,13 +40,22 @@ interface ComposerAttachment {
 }
 const files = ref<ComposerAttachment[]>([])
 const fileInput = ref<HTMLInputElement | null>(null)
-const sending = ref(false)
-const activeTaskId = ref<string | null>(null)
-const cancelling = ref(false)
-const retryingTaskId = ref<string | null>(null)
-const taskStage = ref('')
-const taskElapsedSeconds = ref(0)
-let taskTimer: ReturnType<typeof setInterval> | null = null
+interface PendingUserMessage {
+  content: string
+  createdAt: string
+}
+interface ConversationTaskState {
+  sending: boolean
+  activeTaskId: string | null
+  cancelling: boolean
+  retryingTaskId: string | null
+  taskStage: string
+  taskElapsedSeconds: number
+  pendingUserMessage: PendingUserMessage | null
+  partialPreview: { contentUrl: string; label: string } | null
+}
+const conversationTaskStates = reactive<Record<string, ConversationTaskState>>({})
+const taskTimers = new Map<string, ReturnType<typeof setInterval>>()
 const messageTimeFormatter = new Intl.DateTimeFormat('zh-CN', {
   month: '2-digit',
   day: '2-digit',
@@ -55,12 +64,6 @@ const messageTimeFormatter = new Intl.DateTimeFormat('zh-CN', {
   second: '2-digit',
   hour12: false,
 })
-const pendingUserMessage = ref<{
-  conversationId: string
-  content: string
-  createdAt: string
-} | null>(null)
-const partialPreview = ref<{ contentUrl: string; label: string } | null>(null)
 const editingTitle = ref<string | null>(null)
 const titleDraft = ref('')
 const draggedIndex = ref<number | null>(null)
@@ -74,6 +77,7 @@ const templateTitle = ref('')
 const templatePrompt = ref('')
 const imagePreviewOpen = ref(false)
 const imagePreview = ref<CropPreviewImage | null>(null)
+const imagePreviewMode = ref<'preview' | 'crop'>('preview')
 const mobilePanel = ref<'conversations' | 'parameters' | null>(null)
 const parameterPanelWidth = ref(340)
 const viewportWidth = ref(window.innerWidth)
@@ -86,8 +90,19 @@ const supportedImageTypes = new Set(['image/png', 'image/jpeg', 'image/webp'])
 const parameterPanelMinWidth = 320
 const parameterPanelMaxLimit = 760
 let stopParameterResize: (() => void) | null = null
+let conversationSelectionVersion = 0
 
 const conversationMessages = computed(() => activeConversation.value?.messages ?? [])
+const activeTaskState = computed(() => (
+  activeConversation.value ? conversationTaskStates[activeConversation.value.id] ?? null : null
+))
+const sending = computed(() => activeTaskState.value?.sending ?? false)
+const activeTaskId = computed(() => activeTaskState.value?.activeTaskId ?? null)
+const cancelling = computed(() => activeTaskState.value?.cancelling ?? false)
+const retryingTaskId = computed(() => activeTaskState.value?.retryingTaskId ?? null)
+const taskStage = computed(() => activeTaskState.value?.taskStage ?? '')
+const taskElapsedSeconds = computed(() => activeTaskState.value?.taskElapsedSeconds ?? 0)
+const partialPreview = computed(() => activeTaskState.value?.partialPreview ?? null)
 const filteredConversations = computed(() => {
   const query = conversationSearch.value.trim().toLocaleLowerCase()
   return query
@@ -95,11 +110,7 @@ const filteredConversations = computed(() => {
     : conversations.value
 })
 const visibleMessages = computed(() => branchPath(conversationMessages.value, activeLeafId.value))
-const visiblePendingUserMessage = computed(() =>
-  pendingUserMessage.value?.conversationId === activeConversation.value?.id
-    ? pendingUserMessage.value
-    : null,
-)
+const visiblePendingUserMessage = computed(() => activeTaskState.value?.pendingUserMessage ?? null)
 const visibleLeafId = computed(() => visibleMessages.value[visibleMessages.value.length - 1]?.id ?? null)
 const currentBranchParentId = computed(() => {
   if (composerParentId.value) return composerParentId.value
@@ -185,7 +196,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
-  stopTaskTimer()
+  for (const conversationId of taskTimers.keys()) stopTaskTimer(conversationId)
   stopParameterResize?.()
   files.value.forEach((attachment) => URL.revokeObjectURL(attachment.previewUrl))
   window.removeEventListener('resize', updateParameterPanelBounds)
@@ -193,18 +204,35 @@ onBeforeUnmount(() => {
   document.documentElement.style.removeProperty('--studio-parameter-panel-width')
 })
 
-function startTaskTimer(startedAt = Date.now()) {
-  stopTaskTimer()
-  const update = () => {
-    taskElapsedSeconds.value = Math.max(0, Math.floor((Date.now() - startedAt) / 1000))
+function taskStateFor(conversationId: string) {
+  if (!conversationTaskStates[conversationId]) {
+    conversationTaskStates[conversationId] = {
+      sending: false,
+      activeTaskId: null,
+      cancelling: false,
+      retryingTaskId: null,
+      taskStage: '',
+      taskElapsedSeconds: 0,
+      pendingUserMessage: null,
+      partialPreview: null,
+    }
   }
-  update()
-  taskTimer = setInterval(update, 1000)
+  return conversationTaskStates[conversationId]
 }
 
-function stopTaskTimer() {
-  if (taskTimer) clearInterval(taskTimer)
-  taskTimer = null
+function startTaskTimer(conversationId: string, state: ConversationTaskState, startedAt = Date.now()) {
+  stopTaskTimer(conversationId)
+  const update = () => {
+    state.taskElapsedSeconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000))
+  }
+  update()
+  taskTimers.set(conversationId, setInterval(update, 1000))
+}
+
+function stopTaskTimer(conversationId: string) {
+  const timer = taskTimers.get(conversationId)
+  if (timer) clearInterval(timer)
+  taskTimers.delete(conversationId)
 }
 
 function formatDuration(seconds: number) {
@@ -249,13 +277,29 @@ async function loadTemplates() {
 }
 
 async function selectConversation(id: string) {
-  activeConversation.value = await api<ConversationDetail>(`/api/v1/conversations/${id}`)
-  activeLeafId.value = latestMessageId(activeConversation.value.messages)
-  composerParentId.value = null
-  providerId.value = activeConversation.value.defaultProviderId ?? providerId.value
-  modelId.value = activeConversation.value.defaultModelId ?? modelId.value
-  mobilePanel.value = null
+  const selectionVersion = ++conversationSelectionVersion
+  const selected = await api<ConversationDetail>(`/api/v1/conversations/${id}`)
+  if (selectionVersion !== conversationSelectionVersion) return
+  applySelectedConversation(selected)
   await scrollBottom()
+}
+
+function applySelectedConversation(selected: ConversationDetail) {
+  activeConversation.value = selected
+  activeLeafId.value = latestMessageId(selected.messages)
+  composerParentId.value = null
+  providerId.value = selected.defaultProviderId ?? providerId.value
+  modelId.value = selected.defaultModelId ?? modelId.value
+  mobilePanel.value = null
+}
+
+async function refreshConversationIfActive(conversationId: string) {
+  const refreshed = await api<ConversationDetail>(`/api/v1/conversations/${conversationId}`)
+  if (activeConversation.value?.id === conversationId) {
+    applySelectedConversation(refreshed)
+    await scrollBottom()
+  }
+  return refreshed
 }
 
 async function createConversation() {
@@ -326,7 +370,7 @@ function removeFile(index: number) {
   if (removed) URL.revokeObjectURL(removed.previewUrl)
 }
 
-function openImagePreview(asset: ImageAsset, label: string) {
+function openImagePreview(asset: ImageAsset, label: string, mode: 'preview' | 'crop' = 'preview') {
   imagePreview.value = {
     id: asset.id,
     contentUrl: asset.contentUrl,
@@ -336,11 +380,13 @@ function openImagePreview(asset: ImageAsset, label: string) {
     width: asset.width,
     height: asset.height,
   }
+  imagePreviewMode.value = mode
   imagePreviewOpen.value = true
 }
 
 function openPartialPreview(contentUrl: string, label: string) {
   imagePreview.value = { contentUrl, label, metadata: '最终原图仍在生成' }
+  imagePreviewMode.value = 'preview'
   imagePreviewOpen.value = true
 }
 
@@ -427,75 +473,81 @@ interface MessageSubmission {
 }
 
 async function submitMessage(submission: MessageSubmission) {
-  if (!providerId.value || !modelId.value) return message.error('请先配置并选择可用模型')
+  const selectedProviderId = providerId.value
+  const selectedModelId = modelId.value
+  if (!selectedProviderId || !selectedModelId) return message.error('请先配置并选择可用模型')
+  if (!activeConversation.value) await createConversation()
+  const conversationId = activeConversation.value!.id
+  const state = taskStateFor(conversationId)
+  if (state.sending) return
   const knownMessageIds = new Set(conversationMessages.value.map((item) => item.id))
   const composerFiles = submission.useComposerFiles ? [...files.value] : []
+  const requestParameters = cleanParameters(submission.inputAssetIds.length > 0 || composerFiles.length > 0)
+  const stylePrompt = currentTemplate.value?.prompt
   const uploadedAssetIds: string[] = []
-  sending.value = true
-  startTaskTimer()
-  activeTaskId.value = null
-  cancelling.value = false
-  retryingTaskId.value = null
-  taskStage.value = '正在创建任务'
-  partialPreview.value = null
+  state.sending = true
+  startTaskTimer(conversationId, state)
+  state.activeTaskId = null
+  state.cancelling = false
+  state.retryingTaskId = null
+  state.taskStage = '正在创建任务'
+  state.partialPreview = null
+  state.pendingUserMessage = {
+    content: submission.content,
+    createdAt: new Date().toISOString(),
+  }
+  if (submission.useComposerFiles) {
+    prompt.value = ''
+    files.value = []
+    if (fileInput.value) fileInput.value.value = ''
+  }
   try {
-    if (!activeConversation.value) await createConversation()
-    pendingUserMessage.value = {
-      conversationId: activeConversation.value!.id,
-      content: submission.content,
-      createdAt: new Date().toISOString(),
-    }
     await scrollBottom()
     const inputAssetIds = [...submission.inputAssetIds]
     if (submission.useComposerFiles) {
-      for (const attachment of files.value) {
+      for (const attachment of composerFiles) {
         const body = new FormData()
         body.append('file', attachment.file)
         const asset = await api<ImageAsset>('/api/v1/image-assets/uploads', { method: 'POST', body })
         inputAssetIds.push(asset.id)
         uploadedAssetIds.push(asset.id)
       }
-      prompt.value = ''
-      files.value = []
-      if (fileInput.value) fileInput.value.value = ''
     }
     await streamPost(
-      `/api/v1/conversations/${activeConversation.value!.id}/messages`,
+      `/api/v1/conversations/${conversationId}/messages`,
       {
         content: submission.content,
         parentMessageId: submission.parentMessageId,
-        providerId: providerId.value,
-        modelId: modelId.value,
-        parameters: cleanParameters(inputAssetIds.length > 0),
+        providerId: selectedProviderId,
+        modelId: selectedModelId,
+        parameters: requestParameters,
         inputAssetIds,
-        stylePrompt: currentTemplate.value?.prompt,
+        stylePrompt,
         stream: true,
       },
-      handleTaskEvent,
+      (event) => handleTaskEvent(conversationId, state, event),
     )
-    pendingUserMessage.value = null
-    await selectConversation(activeConversation.value!.id)
+    state.pendingUserMessage = null
+    await refreshConversationIfActive(conversationId)
     await loadConversations()
   } catch (error) {
     await Promise.allSettled(
       uploadedAssetIds.map((id) => api<void>(`/api/v1/image-assets/${id}`, { method: 'DELETE' })),
     )
-    let submissionPersisted = Boolean(activeTaskId.value)
-    if (activeConversation.value) {
-      try {
-        await selectConversation(activeConversation.value.id)
-        await loadConversations()
-        submissionPersisted ||= conversationMessages.value.some(
-          (item) =>
-            !knownMessageIds.has(item.id) &&
-            item.role === 'user' &&
-            item.content?.trim() === submission.content,
-        )
-      } catch {
-        // Keep the original request locally when the server state cannot be refreshed.
-      }
+    let submissionPersisted = Boolean(state.activeTaskId)
+    try {
+      const refreshed = await refreshConversationIfActive(conversationId)
+      submissionPersisted ||= refreshed.messages.some(
+        (item) =>
+          !knownMessageIds.has(item.id) &&
+          item.role === 'user' &&
+          item.content?.trim() === submission.content,
+      )
+      await loadConversations()
+    } catch {
+      // Keep the original request locally when the server state cannot be refreshed.
     }
-    if (submission.useComposerFiles && !submissionPersisted) {
+    if (submission.useComposerFiles && !submissionPersisted && activeConversation.value?.id === conversationId) {
       if (!prompt.value.trim()) prompt.value = submission.content
       if (!files.value.length) files.value = composerFiles
     }
@@ -505,73 +557,80 @@ async function submitMessage(submission: MessageSubmission) {
     composerFiles.forEach((attachment) => {
       if (!activePreviewUrls.has(attachment.previewUrl)) URL.revokeObjectURL(attachment.previewUrl)
     })
-    stopTaskTimer()
-    sending.value = false
-    activeTaskId.value = null
-    cancelling.value = false
-    partialPreview.value = null
-    pendingUserMessage.value = null
-    setTimeout(() => (taskStage.value = ''), 1800)
+    stopTaskTimer(conversationId)
+    state.sending = false
+    state.activeTaskId = null
+    state.cancelling = false
+    state.partialPreview = null
+    state.pendingUserMessage = null
+    const completedStage = state.taskStage
+    setTimeout(() => {
+      if (!state.sending && state.taskStage === completedStage) state.taskStage = ''
+    }, 1800)
   }
 }
 
-function handleTaskEvent(event: TaskEvent) {
-  if (event.type === 'stream.reconnecting') taskStage.value = '正在恢复连接'
-  if (event.type === 'stream.polling') taskStage.value = '正在确认任务状态'
+function handleTaskEvent(conversationId: string, state: ConversationTaskState, event: TaskEvent) {
+  if (event.type === 'stream.reconnecting') state.taskStage = '正在恢复连接'
+  if (event.type === 'stream.polling') state.taskStage = '正在确认任务状态'
   if (event.type === 'task.created') {
-    taskStage.value = '等待生成资源'
-    if (typeof event.data.taskId === 'string') activeTaskId.value = event.data.taskId
+    state.taskStage = '等待生成资源'
+    if (typeof event.data.taskId === 'string') state.activeTaskId = event.data.taskId
   }
   if (event.type === 'task.progress') {
     const stage = String(event.data.stage ?? '')
-    if (stage === 'provider.processing') startTaskTimer()
-    taskStage.value = stageText(stage)
+    if (stage === 'provider.processing') startTaskTimer(conversationId, state)
+    state.taskStage = stageText(stage)
   }
   if (event.type === 'image.partial' && typeof event.data.contentUrl === 'string') {
-    partialPreview.value = {
+    state.partialPreview = {
       contentUrl: event.data.contentUrl,
       label: `流式局部预览 ${Number(event.data.partialIndex ?? 0) + 1}`,
     }
-    taskStage.value = '模型正在细化图片'
-    void scrollBottom()
+    state.taskStage = '模型正在细化图片'
+    if (activeConversation.value?.id === conversationId) void scrollBottom()
   }
   if (event.type === 'image.completed') {
-    taskStage.value = '正在保存原图'
+    state.taskStage = '正在保存原图'
     const asset = event.data.asset
     if (asset && typeof asset === 'object' && 'contentUrl' in asset && typeof asset.contentUrl === 'string') {
-      partialPreview.value = { contentUrl: asset.contentUrl, label: '最终图片' }
+      state.partialPreview = { contentUrl: asset.contentUrl, label: '最终图片' }
     }
   }
-  if (event.type === 'task.completed') taskStage.value = '已完成'
-  if (event.type === 'task.failed') taskStage.value = '生成失败'
+  if (event.type === 'task.completed') state.taskStage = '已完成'
+  if (event.type === 'task.failed') state.taskStage = '生成失败'
   if (event.type === 'task.cancelled') {
-    taskStage.value = '已取消'
-    partialPreview.value = null
+    state.taskStage = '已取消'
+    state.partialPreview = null
   }
 }
 
 async function cancelActiveTask() {
-  if (!activeTaskId.value || cancelling.value) return
-  cancelling.value = true
+  const state = activeTaskState.value
+  if (!state?.activeTaskId || state.cancelling) return
+  state.cancelling = true
   try {
-    await api<void>(`/api/v1/tasks/${activeTaskId.value}/cancel`, { method: 'POST' })
-    taskStage.value = '正在取消'
-    partialPreview.value = null
+    await api<void>(`/api/v1/tasks/${state.activeTaskId}/cancel`, { method: 'POST' })
+    state.taskStage = '正在取消'
+    state.partialPreview = null
   } catch (error) {
-    cancelling.value = false
+    state.cancelling = false
     message.error(error instanceof Error ? error.message : '取消任务失败')
   }
 }
 
 async function retryTask(item: ConversationMessage) {
-  if (!item.taskId || sending.value) return
-  sending.value = true
-  startTaskTimer()
-  retryingTaskId.value = item.taskId
-  activeTaskId.value = item.taskId
-  cancelling.value = false
-  taskStage.value = '正在重新生成'
-  partialPreview.value = null
+  const conversationId = activeConversation.value?.id
+  if (!conversationId || !item.taskId) return
+  const state = taskStateFor(conversationId)
+  if (state.sending) return
+  state.sending = true
+  startTaskTimer(conversationId, state)
+  state.retryingTaskId = item.taskId
+  state.activeTaskId = item.taskId
+  state.cancelling = false
+  state.taskStage = '正在重新生成'
+  state.partialPreview = null
   try {
     const result = await api<{ taskId: string; lastEventId: number }>(
       `/api/v1/tasks/${item.taskId}/retry`,
@@ -584,25 +643,26 @@ async function retryTask(item: ConversationMessage) {
     item.taskRetryCount = (item.taskRetryCount ?? 0) + 1
     item.taskStartedAt = null
     item.taskFinishedAt = null
-    activeTaskId.value = result.taskId
-    await streamTask(result.taskId, handleTaskEvent, {
+    state.activeTaskId = result.taskId
+    await streamTask(result.taskId, (event) => handleTaskEvent(conversationId, state, event), {
       initialLastEventId: String(result.lastEventId),
     })
-    await selectConversation(activeConversation.value!.id)
+    await refreshConversationIfActive(conversationId)
     await loadConversations()
   } catch (error) {
     message.error(error instanceof Error ? error.message : '重试任务失败')
-    if (activeConversation.value) {
-      await selectConversation(activeConversation.value.id).catch(() => undefined)
-    }
+    await refreshConversationIfActive(conversationId).catch(() => undefined)
   } finally {
-    stopTaskTimer()
-    sending.value = false
-    retryingTaskId.value = null
-    activeTaskId.value = null
-    cancelling.value = false
-    partialPreview.value = null
-    setTimeout(() => (taskStage.value = ''), 1800)
+    stopTaskTimer(conversationId)
+    state.sending = false
+    state.retryingTaskId = null
+    state.activeTaskId = null
+    state.cancelling = false
+    state.partialPreview = null
+    const completedStage = state.taskStage
+    setTimeout(() => {
+      if (!state.sending && state.taskStage === completedStage) state.taskStage = ''
+    }, 1800)
   }
 }
 
@@ -854,7 +914,7 @@ async function scrollBottom() {
           </div>
           <div v-else class="conversation-copy">
             <strong>{{ item.title }}</strong>
-            <small>{{ new Date(item.lastMessageAt).toLocaleString() }}</small>
+            <small><span v-if="conversationTaskStates[item.id]?.sending" class="conversation-generating">生成中 · </span>{{ new Date(item.lastMessageAt).toLocaleString() }}</small>
           </div>
           <button class="edit-title" title="修改标题" @click.stop="beginTitle(item)">✎</button>
         </article>
@@ -929,11 +989,19 @@ async function scrollBottom() {
                 </button>
                 <figcaption class="message-image-meta">
                   <span>{{ asset.width }} × {{ asset.height }} · {{ asset.mimeType }}</span>
-                  <a
-                    class="image-download-button"
-                    :href="asset.contentUrl"
-                    :download="imageDownloadName(asset.id, asset.mimeType)"
-                  >↓ 下载原图</a>
+                  <span class="image-asset-actions">
+                    <button
+                      v-if="item.role === 'assistant'"
+                      type="button"
+                      class="image-edit-button"
+                      @click="openImagePreview(asset, messageImageLabel(item), 'crop')"
+                    >裁剪缩放</button>
+                    <a
+                      class="image-download-button"
+                      :href="asset.contentUrl"
+                      :download="imageDownloadName(asset.id, asset.mimeType)"
+                    >↓ 下载原图</a>
+                  </span>
                 </figcaption>
               </figure>
             </div>
@@ -1115,5 +1183,9 @@ async function scrollBottom() {
     </div>
   </n-modal>
 
-  <image-crop-modal v-model:show="imagePreviewOpen" :image="imagePreview" />
+  <image-crop-modal
+    v-model:show="imagePreviewOpen"
+    :image="imagePreview"
+    :initial-mode="imagePreviewMode"
+  />
 </template>

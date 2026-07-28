@@ -28,9 +28,7 @@ const fixedEdge = ref<FixedImageEdge>('width')
 const fixedValue = ref<number | null>(null)
 const dependentValue = ref<number | null>(null)
 const parsedSize = computed(() => parseImageSize(props.size))
-const effectiveAspectRatio = computed(() => (
-  parsedSize.value ? imageAspectRatio(parsedSize.value) : props.aspectRatio ?? 'auto'
-))
+const effectiveAspectRatio = computed(() => props.aspectRatio ?? 'auto')
 const schemaAspectRatios = computed(() => props.aspectDefinition?.options ?? ['auto', '1:1', '16:9', '9:16', '3:2', '2:3'])
 const aspectRatioOptions = computed(() => {
   const values = [...schemaAspectRatios.value]
@@ -46,12 +44,18 @@ const aspectRatioOptions = computed(() => {
 })
 const resolutionOptions = computed(() => {
   const configured = props.sizeDefinition.options ?? ['auto']
-  const selectedAspect = parsedSize.value ? effectiveAspectRatio.value : props.aspectRatio ?? 'auto'
+  const selectedAspect = effectiveAspectRatio.value
   const values = configured.filter((value) => {
     const size = parseImageSize(value)
     return !size || selectedAspect === 'auto' || aspectRatioMatches(size, selectedAspect)
   })
-  if (props.size && props.size !== 'auto' && !values.includes(props.size)) values.push(props.size)
+  if (
+    props.size
+    && props.size !== 'auto'
+    && !values.includes(props.size)
+    && parsedSize.value
+    && (selectedAspect === 'auto' || aspectRatioMatches(parsedSize.value, selectedAspect))
+  ) values.push(props.size)
   const options = values.map((value) => ({
     label: value === 'auto' ? 'Auto（默认）' : value,
     value,
@@ -91,8 +95,19 @@ watch([fixedValue, fixedEdge], () => {
   dependentValue.value = closestNumber(dependentOptions.value, preferred)
 })
 
+watch(
+  () => [props.aspectRatio, props.size] as const,
+  ([aspectRatio, size]) => {
+    const parsed = parseImageSize(size)
+    if (parsed && aspectRatio && aspectRatio !== 'auto' && !aspectRatioMatches(parsed, aspectRatio)) {
+      emit('update:size', 'auto')
+    }
+  },
+  { immediate: true },
+)
+
 function changeAspectRatio(value: string) {
-  if (value === effectiveAspectRatio.value) return
+  if (value === (props.aspectRatio ?? 'auto')) return
   emit('update:aspectRatio', value)
   if (parsedSize.value && (value === 'auto' || !aspectRatioMatches(parsedSize.value, value))) {
     emit('update:size', 'auto')

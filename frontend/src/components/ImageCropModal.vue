@@ -17,6 +17,7 @@ export interface CropPreviewImage {
 const props = defineProps<{
   show: boolean
   image: CropPreviewImage | null
+  initialMode?: 'preview' | 'crop'
 }>()
 const emit = defineEmits<{ 'update:show': [value: boolean] }>()
 const message = useMessage()
@@ -50,11 +51,13 @@ const validOutput = computed(() => {
     && width * height <= 33_554_432
 })
 
-watch(() => props.show, (show) => {
-  if (!show) leaveCropMode()
-})
-
-watch(() => props.image?.contentUrl, () => leaveCropMode())
+watch(
+  [() => props.show, () => props.image?.contentUrl, () => props.initialMode],
+  async ([show]) => {
+    leaveCropMode()
+    if (show && props.initialMode === 'crop') await enterCropMode()
+  },
+)
 
 watch([outputWidth, outputHeight], () => {
   if (cropper && validOutput.value) {

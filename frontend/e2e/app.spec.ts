@@ -241,6 +241,7 @@ async function mockApi(
   }))
   const state = {
     messageRequests: [] as Array<Record<string, unknown>>,
+    messageConversationIds: [] as string[],
     uploadedAssetIds: [] as string[],
     resumeEventIds: [] as string[],
     templateWrites: [] as Array<Record<string, unknown>>,
@@ -309,17 +310,23 @@ async function mockApi(
       return fulfill(createdConversation, 201)
     }
     if (path === `/api/v1/conversations/${conversation.id}` && method === 'GET') {
-      return fulfill({ ...conversation, messages })
+      return fulfill({
+        ...conversation,
+        messages: messages.filter((item) => item.conversationId === conversation.id),
+      })
     }
     if (path === `/api/v1/conversations/${secondConversation.id}` && method === 'GET') {
       return fulfill({
         ...secondConversation,
         defaultModelId: options.multipleModels ? geminiModel.id : model.id,
-        messages: [],
+        messages: messages.filter((item) => item.conversationId === secondConversation.id),
       })
     }
     if (createdConversation && path === `/api/v1/conversations/${createdConversation.id}` && method === 'GET') {
-      return fulfill({ ...createdConversation, messages: [] })
+      return fulfill({
+        ...createdConversation,
+        messages: messages.filter((item) => item.conversationId === createdConversation!.id),
+      })
     }
     if (path === '/api/v1/providers' && method === 'GET') return fulfill([provider])
     if (path === '/api/v1/providers' && method === 'POST') {
@@ -377,10 +384,13 @@ async function mockApi(
       state.assetDeleteRequests.push(assetDeleteMatch[1]!)
       return route.fulfill({ status: 204 })
     }
-    if (path === `/api/v1/conversations/${conversation.id}/messages` && method === 'POST') {
+    const conversationMessageMatch = path.match(/^\/api\/v1\/conversations\/([0-9a-f-]+)\/messages$/)
+    if (conversationMessageMatch && method === 'POST') {
+      const requestConversationId = conversationMessageMatch[1]!
       messageSequence += 1
       const input = request.postDataJSON() as Record<string, unknown>
       state.messageRequests.push(input)
+      state.messageConversationIds.push(requestConversationId)
       if (options.messageCreationFailure) {
         return fulfill({ error: { code: 'VALIDATION_ERROR', message: '任务参数校验失败' } }, 400)
       }
@@ -401,7 +411,7 @@ async function mockApi(
       messages.push(
         {
           id: userMessageId,
-          conversationId: conversation.id,
+          conversationId: requestConversationId,
           parentMessageId,
           role: 'user',
           status: 'completed',
@@ -436,7 +446,7 @@ async function mockApi(
         },
         {
           id: assistantMessageId,
-          conversationId: conversation.id,
+          conversationId: requestConversationId,
           parentMessageId: userMessageId,
           role: 'assistant',
           status: shouldFail ? 'failed' : 'completed',
@@ -842,6 +852,8 @@ test('messages show timestamps and live generation elapsed time', async ({ page 
   expect(generatedImageBox!.height).toBeGreaterThan(generatedImageBox!.width)
   expect(generatedImageBox!.height).toBeLessThanOrEqual(560)
   expect(generatedImageBox!.width).toBeLessThanOrEqual(520)
+  const directCropButton = page.locator('.message-row.assistant .image-edit-button').first()
+  await expect(directCropButton).toBeVisible()
 
   await generatedImageButton.click()
   const imageDialog = page.getByRole('dialog', { name: /生成图片/ })
@@ -862,6 +874,12 @@ test('messages show timestamps and live generation elapsed time', async ({ page 
   await imageDialog.getByRole('button', { name: '关闭图片预览' }).click()
   await expect(imageDialog).toHaveCount(0)
 
+  await directCropButton.click()
+  await expect(imageDialog.getByText('裁剪与缩放', { exact: true })).toBeVisible()
+  await expect(imageDialog.locator('.cropper-container')).toBeVisible()
+  await imageDialog.getByRole('button', { name: '关闭图片预览' }).click()
+  await expect(imageDialog).toHaveCount(0)
+
   const studioDownload = page.locator('.message-row.assistant .image-download-button').first()
   await expect(studioDownload).toHaveAttribute('download', 'ai-image-studio-73000000-0000-4000-8000-000000000001.png')
   await expect(studioDownload).not.toHaveAttribute('target', '_blank')
@@ -869,6 +887,33 @@ test('messages show timestamps and live generation elapsed time', async ({ page 
   await studioDownload.click()
   expect((await studioDownloadStarted).suggestedFilename()).toBe('ai-image-studio-73000000-0000-4000-8000-000000000001.png')
   await expect(page).toHaveURL(/\/studio$/)
+})
+
+test('each conversation can generate independently without blocking a new conversation', async ({ page }) => {
+  const state = await mockApi(page, true, { slowTask: true })
+  await page.goto('/studio')
+
+  await page.locator('.composer textarea').fill('第一个会话正在生成的图片')
+  await page.locator('.send-button').click()
+  await expect(page.locator('.message-row.user.pending-message')).toContainText('第一个会话正在生成的图片')
+
+  await page.getByTitle('新建会话').click()
+  await expect(page.getByRole('heading', { name: '新会话', exact: true })).toBeVisible()
+  await expect(page.locator('.conversation-item').filter({ hasText: conversation.title })).toContainText('生成中')
+  await page.locator('.composer textarea').fill('第二个会话同时生成的图片')
+  await expect(page.locator('.send-button')).toBeEnabled()
+  await page.locator('.send-button').click()
+  await expect(page.locator('.message-row.user.pending-message')).toContainText('第二个会话同时生成的图片')
+
+  await expect.poll(() => state.messageConversationIds).toEqual([
+    conversation.id,
+    '30000000-0000-4000-8000-000000000099',
+  ])
+  await expect(page.getByText('已生成 1 张图片', { exact: true })).toBeVisible({ timeout: 8000 })
+
+  await page.locator('.conversation-item').filter({ hasText: conversation.title }).click()
+  await expect(page.getByText('第一个会话正在生成的图片', { exact: true })).toBeVisible()
+  await expect(page.getByText('已生成 1 张图片', { exact: true })).toBeVisible()
 })
 
 test('clipboard images show thumbnails inside the composer and upload with the message', async ({ page }) => {
@@ -1054,7 +1099,13 @@ test('aspect ratio and target resolution stay linked for custom-size models', as
   await page.getByText('2160x3840', { exact: true }).last().click()
   await expect(aspect.locator('.n-base-selection-label')).toContainText('9:16')
 
+  await aspect.locator('.n-base-selection').first().click()
+  await page.getByText('16:9', { exact: true }).last().click()
+  await expect(size.locator('.n-base-selection-label')).toContainText('Auto')
   await size.locator('.n-base-selection').first().click()
+  await expect(page.getByText('3840x2160', { exact: true }).last()).toBeVisible()
+  await expect(page.getByText('2160x3840', { exact: true })).toHaveCount(0)
+
   await page.getByText('自定义尺寸…', { exact: true }).last().click()
   await expect(panel.getByText('自定义尺寸', { exact: true })).toBeVisible()
   await expect(panel.getByText('当前数值不符合模型的边长、像素数或 16 倍数限制。')).toHaveCount(0)
@@ -1111,6 +1162,13 @@ test('conversation title search and complete history filters are functional', as
   await expect.poll(async () => (await historyImageDialog.locator('img').boundingBox())?.height ?? 0).toBeGreaterThan(400)
   await historyImageDialog.getByRole('button', { name: '关闭图片预览' }).click()
   await expect(historyImageDialog).toHaveCount(0)
+
+  const historyCrop = historyCard.getByRole('button', { name: '裁剪缩放' })
+  await expect(historyCrop).toBeVisible()
+  await historyCrop.click()
+  await expect(historyImageDialog.getByText('裁剪与缩放', { exact: true })).toBeVisible()
+  await expect(historyImageDialog.locator('.cropper-container')).toBeVisible()
+  await historyImageDialog.getByRole('button', { name: '关闭图片预览' }).click()
 
   const historyDownload = historyCard.getByRole('link', { name: '↓ 下载原图' })
   await expect(historyDownload).toHaveAttribute('download', 'ai-image-studio-73000000-0000-4000-8000-000000000099.png')

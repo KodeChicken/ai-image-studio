@@ -38,6 +38,7 @@ const loading = ref(false)
 const message = useMessage()
 const imagePreviewOpen = ref(false)
 const imagePreview = ref<CropPreviewImage | null>(null)
+const imagePreviewMode = ref<'preview' | 'crop'>('preview')
 const modelOptions = computed(() =>
   models.value
     .filter((item) => !providerId.value || item.providerId === providerId.value)
@@ -102,7 +103,7 @@ function dateBoundary(value: string, nextDay: boolean) {
   return date.toISOString()
 }
 
-function openImagePreview(item: HistoryItem) {
+function openImagePreview(item: HistoryItem, mode: 'preview' | 'crop' = 'preview') {
   imagePreview.value = {
     id: item.assetId,
     contentUrl: item.contentUrl,
@@ -112,6 +113,7 @@ function openImagePreview(item: HistoryItem) {
     width: item.width,
     height: item.height,
   }
+  imagePreviewMode.value = mode
   imagePreviewOpen.value = true
 }
 
@@ -145,7 +147,10 @@ function imageDownloadName(item: HistoryItem) {
           <p>{{ item.prompt }}</p>
           <footer class="history-copy-footer">
             <small>{{ item.providerName }} · {{ item.modelName }} · {{ item.width }}×{{ item.height }}</small>
-            <a class="image-download-button" :href="item.contentUrl" :download="imageDownloadName(item)">↓ 下载原图</a>
+            <span class="image-asset-actions">
+              <button type="button" class="image-edit-button" @click="openImagePreview(item, 'crop')">裁剪缩放</button>
+              <a class="image-download-button" :href="item.contentUrl" :download="imageDownloadName(item)">↓ 下载原图</a>
+            </span>
           </footer>
         </div>
       </article>
@@ -153,5 +158,9 @@ function imageDownloadName(item: HistoryItem) {
     <div v-else class="large-empty panel"><span>▦</span><h2>还没有历史作品</h2><p>完成的生图会自动出现在这里。</p></div>
   </div>
 
-  <image-crop-modal v-model:show="imagePreviewOpen" :image="imagePreview" />
+  <image-crop-modal
+    v-model:show="imagePreviewOpen"
+    :image="imagePreview"
+    :initial-mode="imagePreviewMode"
+  />
 </template>
