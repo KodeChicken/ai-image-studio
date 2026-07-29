@@ -123,6 +123,10 @@ const composerAnchor = computed(() =>
 )
 const currentModel = computed(() => models.value.find((item) => item.id === modelId.value) ?? null)
 const currentTemplate = computed(() => templates.value.find((item) => item.id === styleId.value) ?? null)
+const viewingSystemTemplate = computed(() => {
+  if (!editingTemplateId.value) return false
+  return templates.value.find((item) => item.id === editingTemplateId.value)?.ownerId === null
+})
 const providerOptions = computed(() => providers.value.map((item) => ({ label: item.displayName, value: item.id })))
 const modelOptions = computed(() =>
   models.value
@@ -844,20 +848,20 @@ function beginNewTemplate() {
   templatePrompt.value = ''
 }
 
-function editTemplate(template: PromptTemplate) {
-  if (!template.ownerId) return
+function selectTemplate(template: PromptTemplate) {
   editingTemplateId.value = template.id
   templateTitle.value = template.title
   templatePrompt.value = template.prompt
 }
 
 function openTemplateManager(template?: PromptTemplate) {
-  if (template?.ownerId) editTemplate(template)
+  if (template) selectTemplate(template)
   else beginNewTemplate()
   templateManagerOpen.value = true
 }
 
 async function saveTemplate() {
+  if (viewingSystemTemplate.value) return
   if (!templateTitle.value.trim() || !templatePrompt.value.trim()) return message.error('请填写模板名称和 Prompt')
   if (editingTemplateId.value) {
     await api(`/api/v1/prompt-templates/${editingTemplateId.value}`, {
@@ -1167,18 +1171,18 @@ async function scrollBottom() {
     <div class="template-layout">
       <div class="template-list">
         <button :class="{ active: !editingTemplateId }" @click="beginNewTemplate">＋ 新建模板</button>
-        <button v-for="item in templates" :key="item.id" :class="{ active: editingTemplateId === item.id }" :disabled="!item.ownerId" @click="editTemplate(item)">
+        <button v-for="item in templates" :key="item.id" :class="{ active: editingTemplateId === item.id }" @click="selectTemplate(item)">
           {{ item.title }} <small>{{ item.ownerId ? '我的模板' : '系统模板' }}</small>
         </button>
       </div>
       <div class="form-stack">
         <div class="template-editor-heading">
-          <strong>{{ editingTemplateId ? '编辑我的模板' : '新建模板' }}</strong>
-          <span>{{ editingTemplateId ? '修改后将覆盖当前模板。' : '填写名称和 Prompt，保存后即可在创作风格中选择。' }}</span>
+          <strong>{{ viewingSystemTemplate ? '查看系统模板' : editingTemplateId ? '编辑我的模板' : '新建模板' }}</strong>
+          <span>{{ viewingSystemTemplate ? '系统模板为只读内容，可查看并复制 Prompt。' : editingTemplateId ? '修改后将覆盖当前模板。' : '填写名称和 Prompt，保存后即可在创作风格中选择。' }}</span>
         </div>
-        <label>模板名称<n-input v-model:value="templateTitle" placeholder="例如：复古胶片" /></label>
-        <label>Prompt 文本<n-input v-model:value="templatePrompt" type="textarea" :rows="7" /></label>
-        <n-button type="primary" @click="saveTemplate">{{ editingTemplateId ? '保存修改' : '创建模板' }}</n-button>
+        <label>模板名称<n-input v-model:value="templateTitle" :readonly="viewingSystemTemplate" placeholder="例如：复古胶片" /></label>
+        <label>Prompt 文本<n-input v-model:value="templatePrompt" :readonly="viewingSystemTemplate" type="textarea" :rows="7" /></label>
+        <n-button v-if="!viewingSystemTemplate" type="primary" @click="saveTemplate">{{ editingTemplateId ? '保存修改' : '创建模板' }}</n-button>
       </div>
     </div>
   </n-modal>

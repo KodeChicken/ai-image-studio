@@ -198,6 +198,20 @@ const systemStyleTemplate = {
   enabled: true,
 }
 
+const digitalInternetStylePrompt = '互联网行业大会海报风格，蓝色为主色调，深蓝到亮蓝渐变背景，现代科技感与未来科幻氛围，采用数字互联网和大数据视觉语言；融入流动数据网络、发光科技线条、抽象网格、HUD 界面、数字节点、科幻粒子和光点，结合清晰的流程信息可视化布局；整体呈现企业级、专业、高端、简洁的设计质感，具有强视觉中心与明确的信息层级，预留醒目的大会标题、主题文案和关键信息排版区域，画面精致通透、富有空间纵深，适用于互联网行业大会、数字峰会及流程海报。保持用户指定的主体、内容和构图要求。'
+
+const digitalInternetStyleTemplate = {
+  id: '50000000-0000-4000-8000-000000000002',
+  ownerId: null,
+  templateType: 'style',
+  title: '数字互联网大会',
+  prompt: digitalInternetStylePrompt,
+  negativePrompt: null,
+  tags: ['互联网风格', '行业大会', '流程海报', '科技感', '蓝色', '科幻', '科幻粒子', '大数据', '数字互联网'],
+  isPublic: true,
+  enabled: true,
+}
+
 async function mockApi(
   page: Page,
   initiallyAuthenticated: boolean,
@@ -227,7 +241,7 @@ async function mockApi(
   const taskAssistantIds = new Map<string, string>()
   const cancelledTaskIds = new Set<string>()
   const retriedTaskIds = new Set<string>()
-  const promptTemplates: Array<Record<string, unknown>> = [systemStyleTemplate]
+  const promptTemplates: Array<Record<string, unknown>> = [systemStyleTemplate, digitalInternetStyleTemplate]
   const usageRecords = Array.from({ length: 75 }, (_, index) => ({
     id: 75 - index,
     taskId: `70000000-0000-4000-8000-${String(75 - index).padStart(12, '0')}`,
@@ -1322,6 +1336,15 @@ test('style template creation, ordered uploads, multi-turn prompts and SSE recov
   const newTemplateButton = page.getByRole('button', { name: '＋ 新建模板' })
   await expect(newTemplateButton).toHaveClass(/active/)
   await expect(page.locator('.template-editor-heading strong')).toHaveText('新建模板')
+  const systemTemplateButton = page.locator('.template-list button').filter({ hasText: '数字互联网大会' })
+  await systemTemplateButton.click()
+  await expect(systemTemplateButton).toHaveClass(/active/)
+  await expect(page.locator('.template-editor-heading strong')).toHaveText('查看系统模板')
+  await expect(page.getByPlaceholder('例如：复古胶片')).toHaveValue('数字互联网大会')
+  await expect(page.getByPlaceholder('例如：复古胶片')).toHaveAttribute('readonly', '')
+  await expect(page.locator('.dialog-card textarea')).toHaveValue(digitalInternetStylePrompt)
+  await expect(page.locator('.dialog-card textarea')).toHaveAttribute('readonly', '')
+  await expect(page.getByRole('button', { name: /保存修改|创建模板/ })).toHaveCount(0)
   await newTemplateButton.click()
   await expect(page.getByPlaceholder('例如：复古胶片')).toHaveValue('')
   await expect(page.locator('.dialog-card textarea')).toHaveValue('')

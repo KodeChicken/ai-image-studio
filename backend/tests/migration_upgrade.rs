@@ -15,7 +15,7 @@ async fn upgrades_three_predecessor_schemas_without_losing_business_rows() -> an
         .max_connections(1)
         .connect(&base_url)
         .await?;
-    for predecessor in [7_i64, 8, 9] {
+    for predecessor in [10_i64, 11, 12] {
         exercise_upgrade(&admin, &base_url, predecessor).await?;
     }
     Ok(())
@@ -87,9 +87,10 @@ async fn run_upgrade_case(
         sqlx::query_scalar::<_, i64>("SELECT COUNT(*)::BIGINT FROM _sqlx_migrations WHERE success")
             .fetch_one(&pool)
             .await?;
+    let expected_migrations = MIGRATOR.iter().count() as i64;
     anyhow::ensure!(
-        applied == 10,
-        "expected 10 applied migrations, got {applied}"
+        applied == expected_migrations,
+        "expected {expected_migrations} applied migrations, got {applied}"
     );
     let user_exists =
         sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)")
@@ -118,7 +119,13 @@ async fn run_upgrade_case(
     )
     .fetch_one(&pool)
     .await?;
-    anyhow::ensure!(public_templates == 3);
+    anyhow::ensure!(public_templates == 4);
+    let digital_internet_template = sqlx::query_scalar::<_, String>(
+        "SELECT prompt FROM prompt_templates WHERE id = '10000000-0000-4000-8000-000000000004'",
+    )
+    .fetch_one(&pool)
+    .await?;
+    anyhow::ensure!(digital_internet_template.contains("科幻粒子"));
     let message_status_constraint = sqlx::query_scalar::<_, String>(
         r#"
         SELECT pg_get_constraintdef(oid)
