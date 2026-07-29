@@ -27,6 +27,7 @@ struct PromptTemplate {
     owner_id: Option<Uuid>,
     template_type: String,
     title: String,
+    applicable_scenarios: String,
     prompt: String,
     negative_prompt: Option<String>,
     tags: Vec<String>,
@@ -54,7 +55,7 @@ async fn list(
     }
     let templates = sqlx::query_as::<_, PromptTemplate>(
         r#"
-        SELECT id, owner_id, template_type, title, prompt, negative_prompt, tags,
+        SELECT id, owner_id, template_type, title, applicable_scenarios, prompt, negative_prompt, tags,
                is_public, enabled, created_at, updated_at
         FROM prompt_templates
         WHERE (owner_id = $1 OR (owner_id IS NULL AND is_public))
@@ -76,6 +77,8 @@ struct CreateRequest {
     #[serde(default = "default_type")]
     template_type: String,
     title: String,
+    #[serde(default)]
+    applicable_scenarios: String,
     prompt: String,
     negative_prompt: Option<String>,
     #[serde(default)]
@@ -90,6 +93,7 @@ async fn create(
     current.require_password_changed()?;
     validate_type(&input.template_type)?;
     validate_text(&input.title, 1, 256, "title")?;
+    validate_text(&input.applicable_scenarios, 0, 500, "applicable scenarios")?;
     validate_text(&input.prompt, 1, 8000, "prompt")?;
     if input.tags.len() > 20 {
         return Err(AppError::Validation(
@@ -99,14 +103,15 @@ async fn create(
     let id = sqlx::query_scalar::<_, Uuid>(
         r#"
         INSERT INTO prompt_templates (
-            owner_id, template_type, title, prompt, negative_prompt, tags
-        ) VALUES ($1, $2, $3, $4, $5, $6)
+            owner_id, template_type, title, applicable_scenarios, prompt, negative_prompt, tags
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
         RETURNING id
         "#,
     )
     .bind(current.id)
     .bind(input.template_type)
     .bind(input.title.trim())
+    .bind(input.applicable_scenarios.trim())
     .bind(input.prompt.trim())
     .bind(input.negative_prompt)
     .bind(input.tags)
@@ -120,6 +125,7 @@ async fn create(
 #[serde(rename_all = "camelCase")]
 struct UpdateRequest {
     title: Option<String>,
+    applicable_scenarios: Option<String>,
     prompt: Option<String>,
     negative_prompt: Option<String>,
     tags: Option<Vec<String>>,
@@ -136,6 +142,9 @@ async fn update(
     if let Some(value) = input.title.as_deref() {
         validate_text(value, 1, 256, "title")?;
     }
+    if let Some(value) = input.applicable_scenarios.as_deref() {
+        validate_text(value, 0, 500, "applicable scenarios")?;
+    }
     if let Some(value) = input.prompt.as_deref() {
         validate_text(value, 1, 8000, "prompt")?;
     }
@@ -147,13 +156,18 @@ async fn update(
     let changed = sqlx::query(
         r#"
         UPDATE prompt_templates
-        SET title = COALESCE($1, title), prompt = COALESCE($2, prompt),
-            negative_prompt = COALESCE($3, negative_prompt), tags = COALESCE($4, tags),
-            enabled = COALESCE($5, enabled), updated_at = NOW()
-        WHERE id = $6 AND owner_id = $7
+        SET title = COALESCE($1, title), applicable_scenarios = COALESCE($2, applicable_scenarios),
+            prompt = COALESCE($3, prompt), negative_prompt = COALESCE($4, negative_prompt),
+            tags = COALESCE($5, tags), enabled = COALESCE($6, enabled), updated_at = NOW()
+        WHERE id = $7 AND owner_id = $8
         "#,
     )
     .bind(input.title.map(|value| value.trim().to_owned()))
+    .bind(
+        input
+            .applicable_scenarios
+            .map(|value| value.trim().to_owned()),
+    )
     .bind(input.prompt.map(|value| value.trim().to_owned()))
     .bind(input.negative_prompt)
     .bind(input.tags)
@@ -172,7 +186,7 @@ async fn update(
 async fn find_owned(state: &AppState, owner_id: Uuid, id: Uuid) -> AppResult<PromptTemplate> {
     sqlx::query_as::<_, PromptTemplate>(
         r#"
-        SELECT id, owner_id, template_type, title, prompt, negative_prompt, tags,
+        SELECT id, owner_id, template_type, title, applicable_scenarios, prompt, negative_prompt, tags,
                is_public, enabled, created_at, updated_at
         FROM prompt_templates WHERE id = $1 AND owner_id = $2
         "#,

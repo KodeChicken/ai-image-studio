@@ -15,7 +15,7 @@ async fn upgrades_three_predecessor_schemas_without_losing_business_rows() -> an
         .max_connections(1)
         .connect(&base_url)
         .await?;
-    for predecessor in [10_i64, 11, 12] {
+    for predecessor in [11_i64, 12, 13] {
         exercise_upgrade(&admin, &base_url, predecessor).await?;
     }
     Ok(())
@@ -119,13 +119,31 @@ async fn run_upgrade_case(
     )
     .fetch_one(&pool)
     .await?;
-    anyhow::ensure!(public_templates == 4);
+    anyhow::ensure!(public_templates == 19);
+    let templates_without_scenarios = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*)::BIGINT FROM prompt_templates WHERE owner_id IS NULL AND applicable_scenarios = ''",
+    )
+    .fetch_one(&pool)
+    .await?;
+    anyhow::ensure!(templates_without_scenarios == 0);
     let digital_internet_template = sqlx::query_scalar::<_, String>(
         "SELECT prompt FROM prompt_templates WHERE id = '10000000-0000-4000-8000-000000000004'",
     )
     .fetch_one(&pool)
     .await?;
     anyhow::ensure!(digital_internet_template.contains("科幻粒子"));
+    let blueprint_template = sqlx::query_as::<_, (String, String, Option<String>)>(
+        r#"
+        SELECT applicable_scenarios, prompt, negative_prompt
+        FROM prompt_templates
+        WHERE id = '10000000-0000-4000-8000-000000000015'
+        "#,
+    )
+    .fetch_one(&pool)
+    .await?;
+    anyhow::ensure!(blueprint_template.0.contains("工业设计"));
+    anyhow::ensure!(blueprint_template.1.contains("工程轴"));
+    anyhow::ensure!(blueprint_template.2.is_some());
     let message_status_constraint = sqlx::query_scalar::<_, String>(
         r#"
         SELECT pg_get_constraintdef(oid)

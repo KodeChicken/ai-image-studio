@@ -120,6 +120,7 @@ export interface PromptTemplate {
   ownerId: string | null
   templateType: 'general' | 'style'
   title: string
+  applicableScenarios: string
   prompt: string
   negativePrompt: string | null
   tags: string[]

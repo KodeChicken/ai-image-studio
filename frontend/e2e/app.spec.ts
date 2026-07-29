@@ -191,6 +191,7 @@ const systemStyleTemplate = {
   ownerId: null,
   templateType: 'style',
   title: '电影感',
+  applicableScenarios: '叙事海报、角色场景和需要戏剧氛围的画面',
   prompt: 'cinematic lighting',
   negativePrompt: null,
   tags: ['cinematic'],
@@ -199,12 +200,14 @@ const systemStyleTemplate = {
 }
 
 const digitalInternetStylePrompt = '互联网行业大会海报风格，蓝色为主色调，深蓝到亮蓝渐变背景，现代科技感与未来科幻氛围，采用数字互联网和大数据视觉语言；融入流动数据网络、发光科技线条、抽象网格、HUD 界面、数字节点、科幻粒子和光点，结合清晰的流程信息可视化布局；整体呈现企业级、专业、高端、简洁的设计质感，具有强视觉中心与明确的信息层级，预留醒目的大会标题、主题文案和关键信息排版区域，画面精致通透、富有空间纵深，适用于互联网行业大会、数字峰会及流程海报。保持用户指定的主体、内容和构图要求。'
+const digitalInternetApplicableScenarios = '互联网行业大会、数字峰会、科技发布会、流程海报和大数据主题视觉'
 
 const digitalInternetStyleTemplate = {
   id: '50000000-0000-4000-8000-000000000002',
   ownerId: null,
   templateType: 'style',
   title: '数字互联网大会',
+  applicableScenarios: digitalInternetApplicableScenarios,
   prompt: digitalInternetStylePrompt,
   negativePrompt: null,
   tags: ['互联网风格', '行业大会', '流程海报', '科技感', '蓝色', '科幻', '科幻粒子', '大数据', '数字互联网'],
@@ -379,6 +382,15 @@ async function mockApi(
       promptTemplates.push(created)
       state.templateWrites.push(input)
       return fulfill(created, 201)
+    }
+    const promptTemplateMatch = path.match(/^\/api\/v1\/prompt-templates\/([0-9a-f-]+)$/)
+    if (promptTemplateMatch && method === 'PATCH') {
+      const template = promptTemplates.find((item) => item.id === promptTemplateMatch[1] && item.ownerId === user.id)
+      if (!template) return fulfill({ error: { code: 'NOT_FOUND', message: 'template not found' } }, 404)
+      const input = request.postDataJSON() as Record<string, unknown>
+      Object.assign(template, input)
+      state.templateWrites.push(input)
+      return fulfill(template)
     }
     if (path === '/api/v1/image-assets/uploads' && method === 'POST') {
       uploadSequence += 1
@@ -1336,30 +1348,49 @@ test('style template creation, ordered uploads, multi-turn prompts and SSE recov
   await expect(page.getByText('21:9', { exact: true })).toBeVisible()
   await page.getByText('21:9', { exact: true }).click()
 
-  await page.getByRole('button', { name: '管理模板' }).click()
+  const styleField = page.locator('.parameter-field').filter({ hasText: '创作风格' })
+  await styleField.locator('.n-select').click()
+  await page.getByText('数字互联网大会', { exact: true }).last().click()
+  await expect(styleField.getByText(`适用场景：${digitalInternetApplicableScenarios}`)).toBeVisible()
+  await styleField.getByRole('button', { name: '管理模板' }).click()
   await expect(page.getByText('管理创作风格模板')).toBeVisible()
   const newTemplateButton = page.getByRole('button', { name: '＋ 新建模板' })
-  await expect(newTemplateButton).toHaveClass(/active/)
-  await expect(page.locator('.template-editor-heading strong')).toHaveText('新建模板')
   const systemTemplateButton = page.locator('.template-list button').filter({ hasText: '数字互联网大会' })
-  await systemTemplateButton.click()
   await expect(systemTemplateButton).toHaveClass(/active/)
   await expect(page.locator('.template-editor-heading strong')).toHaveText('查看系统模板')
   await expect(page.getByPlaceholder('例如：复古胶片')).toHaveValue('数字互联网大会')
   await expect(page.getByPlaceholder('例如：复古胶片')).toHaveAttribute('readonly', '')
-  await expect(page.locator('.dialog-card textarea')).toHaveValue(digitalInternetStylePrompt)
-  await expect(page.locator('.dialog-card textarea')).toHaveAttribute('readonly', '')
+  await expect(page.getByLabel('适用场景')).toHaveValue(digitalInternetApplicableScenarios)
+  await expect(page.getByLabel('适用场景')).toHaveAttribute('readonly', '')
+  await expect(page.getByLabel('Prompt 文本')).toHaveValue(digitalInternetStylePrompt)
+  await expect(page.getByLabel('Prompt 文本')).toHaveAttribute('readonly', '')
   await expect(page.getByRole('button', { name: /保存修改|创建模板/ })).toHaveCount(0)
   await newTemplateButton.click()
   await expect(page.getByPlaceholder('例如：复古胶片')).toHaveValue('')
-  await expect(page.locator('.dialog-card textarea')).toHaveValue('')
+  await expect(page.getByLabel('适用场景')).toHaveValue('')
+  await expect(page.getByLabel('Prompt 文本')).toHaveValue('')
   await page.getByPlaceholder('例如：复古胶片').fill('复古胶片')
-  await page.locator('.dialog-card textarea').fill('vintage film grain')
+  await page.getByLabel('适用场景').fill('品牌人像、旅行与日常生活方式视觉')
+  await page.getByLabel('Prompt 文本').fill('vintage film grain')
   await page.getByRole('button', { name: '创建模板' }).click()
   await expect(page.getByText('模板已保存')).toBeVisible()
   expect(state.templateWrites).toEqual([
-    expect.objectContaining({ templateType: 'style', title: '复古胶片', prompt: 'vintage film grain' }),
+    expect.objectContaining({
+      templateType: 'style',
+      title: '复古胶片',
+      applicableScenarios: '品牌人像、旅行与日常生活方式视觉',
+      prompt: 'vintage film grain',
+    }),
   ])
+
+  await styleField.getByRole('button', { name: '管理模板' }).click()
+  await page.locator('.template-list button').filter({ hasText: '复古胶片' }).click()
+  await expect(page.locator('.template-editor-heading strong')).toHaveText('编辑我的模板')
+  await page.getByLabel('适用场景').fill('品牌人像、旅行、咖啡馆与日常生活方式视觉')
+  await page.getByRole('button', { name: '保存修改' }).click()
+  expect(state.templateWrites[1]).toEqual(expect.objectContaining({
+    applicableScenarios: '品牌人像、旅行、咖啡馆与日常生活方式视觉',
+  }))
 
   const input = page.locator('input[type="file"]')
   await input.setInputFiles([

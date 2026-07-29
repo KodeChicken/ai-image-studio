@@ -76,6 +76,7 @@ const composerParentId = ref<string | null>(null)
 const templateManagerOpen = ref(false)
 const editingTemplateId = ref<string | null>(null)
 const templateTitle = ref('')
+const templateApplicableScenarios = ref('')
 const templatePrompt = ref('')
 const imagePreviewOpen = ref(false)
 const imagePreview = ref<CropPreviewImage | null>(null)
@@ -871,12 +872,14 @@ function stageText(stage: string) {
 function beginNewTemplate() {
   editingTemplateId.value = null
   templateTitle.value = ''
+  templateApplicableScenarios.value = ''
   templatePrompt.value = ''
 }
 
 function selectTemplate(template: PromptTemplate) {
   editingTemplateId.value = template.id
   templateTitle.value = template.title
+  templateApplicableScenarios.value = template.applicableScenarios
   templatePrompt.value = template.prompt
 }
 
@@ -892,12 +895,12 @@ async function saveTemplate() {
   if (editingTemplateId.value) {
     await api(`/api/v1/prompt-templates/${editingTemplateId.value}`, {
       method: 'PATCH',
-      body: JSON.stringify({ title: templateTitle.value, prompt: templatePrompt.value }),
+      body: JSON.stringify({ title: templateTitle.value, applicableScenarios: templateApplicableScenarios.value, prompt: templatePrompt.value }),
     })
   } else {
     await api('/api/v1/prompt-templates', {
       method: 'POST',
-      body: JSON.stringify({ templateType: 'style', title: templateTitle.value, prompt: templatePrompt.value }),
+      body: JSON.stringify({ templateType: 'style', title: templateTitle.value, applicableScenarios: templateApplicableScenarios.value, prompt: templatePrompt.value }),
     })
   }
   await loadTemplates()
@@ -1167,6 +1170,7 @@ async function scrollBottom() {
           <label v-if="schema.n">生成数量<n-input-number :value="numberValue(parameters.n)" :min="schema.n.min ?? 1" :max="schema.n.max ?? 10" @update:value="value => setParameter('n', value)" /></label>
           <div class="parameter-field"><span>创作风格</span>
             <div class="inline-control"><n-select v-model:value="styleId" clearable :options="styleOptions" /><button @click="openTemplateManager(currentTemplate ?? undefined)">管理模板</button></div>
+            <small v-if="currentTemplate?.applicableScenarios" class="parameter-hint">适用场景：{{ currentTemplate.applicableScenarios }}</small>
           </div>
         </section>
         <details class="parameter-group advanced" open>
@@ -1204,9 +1208,10 @@ async function scrollBottom() {
       <div class="form-stack">
         <div class="template-editor-heading">
           <strong>{{ viewingSystemTemplate ? '查看系统模板' : editingTemplateId ? '编辑我的模板' : '新建模板' }}</strong>
-          <span>{{ viewingSystemTemplate ? '系统模板为只读内容，可查看并复制 Prompt。' : editingTemplateId ? '修改后将覆盖当前模板。' : '填写名称和 Prompt，保存后即可在创作风格中选择。' }}</span>
+          <span>{{ viewingSystemTemplate ? '系统模板为只读内容，可查看适用场景并复制 Prompt。' : editingTemplateId ? '修改后将覆盖当前模板。' : '填写名称、适用场景和 Prompt，保存后即可在创作风格中选择。' }}</span>
         </div>
         <label>模板名称<n-input v-model:value="templateTitle" :readonly="viewingSystemTemplate" placeholder="例如：复古胶片" /></label>
+        <label>适用场景<n-input v-model:value="templateApplicableScenarios" :readonly="viewingSystemTemplate" type="textarea" :rows="2" :maxlength="500" show-count placeholder="例如：品牌人像、旅行与日常生活方式视觉" /></label>
         <label>Prompt 文本<n-input v-model:value="templatePrompt" :readonly="viewingSystemTemplate" type="textarea" :rows="7" /></label>
         <n-button v-if="!viewingSystemTemplate" type="primary" @click="saveTemplate">{{ editingTemplateId ? '保存修改' : '创建模板' }}</n-button>
       </div>
