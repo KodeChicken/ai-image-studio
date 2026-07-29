@@ -963,14 +963,28 @@ test('messages show timestamps and live generation elapsed time', async ({ page 
     end: (input as HTMLInputElement).selectionEnd,
     length: (input as HTMLInputElement).value.length,
   }))).toEqual({ start: 0, end: 4, length: 4 })
+  const cropBoxBeforeOutputResize = await cropBox.boundingBox()
+  const outputHeightBeforeWidthChange = await outputHeight.inputValue()
+  expect(cropBoxBeforeOutputResize).not.toBeNull()
   await outputWidth.fill('960')
+  await expect(outputHeight).toHaveValue(outputHeightBeforeWidthChange)
+  await expect.poll(async () => {
+    const box = await cropBox.boundingBox()
+    return box ? {
+      widthDifference: Math.abs(box.width - cropBoxBeforeOutputResize!.width),
+      heightDifference: Math.abs(box.height - cropBoxBeforeOutputResize!.height),
+    } : null
+  }).toEqual({ widthDifference: 0, heightDifference: 0 })
   await outputHeight.fill('128')
   await expect(outputWidth).toHaveValue('960')
   await expect(outputHeight).toHaveValue('128')
   await expect.poll(async () => {
     const box = await cropBox.boundingBox()
-    return box ? box.width / box.height : 0
-  }).toBeCloseTo(960 / 128, 1)
+    return box ? {
+      widthDifference: Math.abs(box.width - cropBoxBeforeOutputResize!.width),
+      heightDifference: Math.abs(box.height - cropBoxBeforeOutputResize!.height),
+    } : null
+  }).toEqual({ widthDifference: 0, heightDifference: 0 })
   const croppedDownloadStarted = page.waitForEvent('download')
   await imageDialog.getByRole('button', { name: '导出成品' }).click()
   expect((await croppedDownloadStarted).suggestedFilename()).toBe(
