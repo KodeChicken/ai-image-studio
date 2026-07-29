@@ -867,6 +867,7 @@ test('messages show timestamps and live generation elapsed time', async ({ page 
   const cropperCanvas = imageDialog.locator('.cropper-canvas')
   const cropBox = imageDialog.locator('.cropper-crop-box')
   await expect(cropperContainer).toBeVisible()
+  await expect(cropBox).toHaveAttribute('data-crop-dimensions', /^\d+ × \d+ px$/)
   await expect(imageDialog.locator('.image-crop-zoom')).toHaveCount(0)
   await expect(imageDialog.locator('.n-input-number')).toHaveCount(0)
 
@@ -878,6 +879,10 @@ test('messages show timestamps and live generation elapsed time', async ({ page 
     .toBeLessThan(canvasBeforeZoomOut!.width)
 
   const cropBoxBeforeResize = await cropBox.boundingBox()
+  const displayedSizeBeforeResize = await cropBox.evaluate((element) => {
+    const [width, height] = element.getAttribute('data-crop-dimensions')?.match(/\d+/g)?.map(Number) ?? []
+    return { width, height }
+  })
   const resizeHandle = imageDialog.locator('.cropper-point.point-e')
   const resizeHandleBox = await resizeHandle.boundingBox()
   expect(cropBoxBeforeResize).not.toBeNull()
@@ -887,8 +892,42 @@ test('messages show timestamps and live generation elapsed time', async ({ page 
   await page.mouse.down()
   await page.mouse.move(resizeHandleBox!.x + resizeHandleBox!.width / 2 - 40, resizeHandleBox!.y + resizeHandleBox!.height / 2)
   await page.mouse.up()
-  await expect.poll(async () => (await cropBox.boundingBox())?.width ?? 0)
-    .toBeLessThan(cropBoxBeforeResize!.width)
+  await expect.poll(async () => {
+    const resized = await cropBox.boundingBox()
+    return resized ? {
+      narrower: resized.width < cropBoxBeforeResize!.width,
+      heightDifference: Math.abs(resized.height - cropBoxBeforeResize!.height),
+    } : null
+  }).toEqual({ narrower: true, heightDifference: 0 })
+  const displayedSizeAfterWidthResize = await cropBox.evaluate((element) => {
+    const [width, height] = element.getAttribute('data-crop-dimensions')?.match(/\d+/g)?.map(Number) ?? []
+    return { width, height }
+  })
+  expect(displayedSizeAfterWidthResize.width).toBeLessThan(displayedSizeBeforeResize.width)
+  expect(displayedSizeAfterWidthResize.height).toBe(displayedSizeBeforeResize.height)
+
+  const cropBoxBeforeHeightResize = await cropBox.boundingBox()
+  const heightResizeHandle = imageDialog.locator('.cropper-point.point-n')
+  const heightResizeHandleBox = await heightResizeHandle.boundingBox()
+  expect(cropBoxBeforeHeightResize).not.toBeNull()
+  expect(heightResizeHandleBox).not.toBeNull()
+  await page.mouse.move(heightResizeHandleBox!.x + heightResizeHandleBox!.width / 2, heightResizeHandleBox!.y + heightResizeHandleBox!.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(heightResizeHandleBox!.x + heightResizeHandleBox!.width / 2, heightResizeHandleBox!.y + heightResizeHandleBox!.height / 2 + 30)
+  await page.mouse.up()
+  await expect.poll(async () => {
+    const resized = await cropBox.boundingBox()
+    return resized ? {
+      widthDifference: Math.abs(resized.width - cropBoxBeforeHeightResize!.width),
+      shorter: resized.height < cropBoxBeforeHeightResize!.height,
+    } : null
+  }).toEqual({ widthDifference: 0, shorter: true })
+  const displayedSizeAfterHeightResize = await cropBox.evaluate((element) => {
+    const [width, height] = element.getAttribute('data-crop-dimensions')?.match(/\d+/g)?.map(Number) ?? []
+    return { width, height }
+  })
+  expect(displayedSizeAfterHeightResize.width).toBe(displayedSizeAfterWidthResize.width)
+  expect(displayedSizeAfterHeightResize.height).toBeLessThan(displayedSizeAfterWidthResize.height)
 
   const outputWidth = imageDialog.getByLabel('输出宽度')
   const outputHeight = imageDialog.getByLabel('输出高度')

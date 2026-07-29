@@ -267,6 +267,7 @@ body.parameter-panel-resizing * { cursor: col-resize !important; }
 .image-crop-canvas .cropper-face { cursor: move; }
 .image-crop-canvas .cropper-line { background-color: #9d6cff; opacity: .75; }
 .image-crop-canvas .cropper-point { width: 10px; height: 10px; border: 2px solid #fff; border-radius: 50%; background-color: #7c3aed; opacity: 1; }
+.image-crop-canvas .cropper-crop-box::before { position: absolute; z-index: 2; top: 8px; left: 8px; padding: 4px 7px; border: 1px solid rgba(255, 255, 255, .28); border-radius: 6px; background: rgba(18, 16, 22, .78); color: #fff; content: attr(data-crop-dimensions); font-size: 11px; font-weight: 600; line-height: 1.4; pointer-events: none; white-space: nowrap; }
 .template-editor-heading span { color: var(--muted); font-size: 11px; line-height: 1.5; }
 
 @container parameter-panel (min-width: 500px) {

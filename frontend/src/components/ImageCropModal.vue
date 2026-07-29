@@ -58,12 +58,6 @@ watch(
   },
 )
 
-watch([outputWidth, outputHeight], () => {
-  if (cropper && validOutput.value) {
-    cropper.setAspectRatio(outputWidth.value! / outputHeight.value!)
-  }
-})
-
 onBeforeUnmount(destroyCropper)
 
 async function enterCropMode() {
@@ -79,7 +73,6 @@ function initializeCropper() {
   if (!cropImage.value || !validOutput.value) return
   destroyCropper()
   cropper = new Cropper(cropImage.value, {
-    aspectRatio: outputWidth.value! / outputHeight.value!,
     viewMode: 0,
     dragMode: 'move',
     autoCropArea: 0.82,
@@ -101,6 +94,11 @@ function initializeCropper() {
       const initialZoom = imageData.naturalWidth > 0 ? imageData.width / imageData.naturalWidth : 1
       minZoomRatio = Math.max(initialZoom * 0.25, 0.01)
       maxZoomRatio = Math.max(initialZoom * 8, initialZoom + 2)
+      const cropData = cropper.getData(true)
+      updateCropDimensions(cropData.width, cropData.height)
+    },
+    crop(event) {
+      updateCropDimensions(event.detail.width, event.detail.height)
     },
     zoom(event) {
       if (event.detail.ratio < minZoomRatio || event.detail.ratio > maxZoomRatio) {
@@ -108,6 +106,13 @@ function initializeCropper() {
       }
     },
   })
+}
+
+function updateCropDimensions(width: number, height: number) {
+  const cropBox = cropImage.value
+    ?.parentElement
+    ?.querySelector<HTMLElement>('.cropper-crop-box')
+  if (cropBox) cropBox.dataset.cropDimensions = `${Math.round(width)} × ${Math.round(height)} px`
 }
 
 function updateOutputDimension(edge: 'width' | 'height', event: Event) {
