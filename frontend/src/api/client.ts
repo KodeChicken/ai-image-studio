@@ -20,6 +20,7 @@ interface StreamPostOptions {
   pollAttempts?: number
   pollIntervalMs?: number
   initialLastEventId?: string
+  inactivityTimeoutMs?: number
 }
 
 const terminalEvents = new Set(['task.completed', 'task.failed', 'task.cancelled'])
@@ -48,6 +49,7 @@ export async function streamPost(
   const reconnectDelayMs = options.reconnectDelayMs ?? 500
   const pollAttempts = options.pollAttempts ?? 300
   const pollIntervalMs = options.pollIntervalMs ?? 1000
+  const inactivityTimeoutMs = Math.max(0, options.inactivityTimeoutMs ?? 45_000)
   let taskId = ''
   let lastEventId = ''
   let terminal = false
@@ -67,7 +69,11 @@ export async function streamPost(
     body: JSON.stringify(body),
   })
   await assertEventStream(initial, '生成请求失败')
-  await consumeEventStream(initial, acceptEvent)
+  try {
+    await consumeEventStream(initial, acceptEvent, inactivityTimeoutMs)
+  } catch (error) {
+    if (!taskId) throw error
+  }
   if (terminal) return
   if (!taskId) throw new Error('生成事件流已中断，且未收到可恢复的任务 ID')
 
@@ -86,7 +92,7 @@ export async function streamPost(
         headers,
       })
       await assertEventStream(resumed, '恢复生成进度失败')
-      await consumeEventStream(resumed, acceptEvent)
+      await consumeEventStream(resumed, acceptEvent, inactivityTimeoutMs)
     } catch (error) {
       if (error instanceof ApiError && [401, 403, 404].includes(error.status)) throw error
     }
@@ -106,6 +112,7 @@ export async function streamTask(
   const reconnectDelayMs = options.reconnectDelayMs ?? 500
   const pollAttempts = options.pollAttempts ?? 300
   const pollIntervalMs = options.pollIntervalMs ?? 1000
+  const inactivityTimeoutMs = Math.max(0, options.inactivityTimeoutMs ?? 45_000)
   let lastEventId = options.initialLastEventId ?? ''
   let terminal = false
 
@@ -132,7 +139,7 @@ export async function streamTask(
         headers,
       })
       await assertEventStream(response, '恢复重试进度失败')
-      await consumeEventStream(response, acceptEvent)
+      await consumeEventStream(response, acceptEvent, inactivityTimeoutMs)
     } catch (error) {
       if (error instanceof ApiError && [401, 403, 404].includes(error.status)) throw error
     }
@@ -158,27 +165,56 @@ async function assertEventStream(response: Response, fallbackMessage: string): P
 async function consumeEventStream(
   response: Response,
   onEvent: (event: StreamEvent) => void,
+  inactivityTimeoutMs: number,
 ): Promise<void> {
   if (!response.body) throw new Error('事件流响应没有可读取的内容')
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
-  while (true) {
-    const { value, done } = await reader.read()
-    buffer += decoder.decode(value, { stream: !done })
-    let boundary = eventBoundary(buffer)
-    while (boundary) {
-      const block = buffer.slice(0, boundary.index)
-      buffer = buffer.slice(boundary.index + boundary.length)
-      const parsed = parseEvent(block)
-      if (parsed) onEvent(parsed)
-      boundary = eventBoundary(buffer)
+  try {
+    while (true) {
+      const { value, done } = await readStreamChunk(reader, inactivityTimeoutMs)
+      buffer += decoder.decode(value, { stream: !done })
+      let boundary = eventBoundary(buffer)
+      while (boundary) {
+        const block = buffer.slice(0, boundary.index)
+        buffer = buffer.slice(boundary.index + boundary.length)
+        const parsed = parseEvent(block)
+        if (parsed) onEvent(parsed)
+        boundary = eventBoundary(buffer)
+      }
+      if (done) {
+        const parsed = parseEvent(buffer.trim())
+        if (parsed) onEvent(parsed)
+        return
+      }
     }
-    if (done) {
-      const parsed = parseEvent(buffer.trim())
-      if (parsed) onEvent(parsed)
-      return
-    }
+  } finally {
+    reader.releaseLock()
+  }
+}
+
+async function readStreamChunk(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  inactivityTimeoutMs: number,
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  if (inactivityTimeoutMs === 0) return reader.read()
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      reader.read(),
+      new Promise<never>((_, reject) => {
+        timeout = globalThis.setTimeout(
+          () => reject(new Error(`生成事件流连续 ${Math.ceil(inactivityTimeoutMs / 1000)} 秒没有数据`)),
+          inactivityTimeoutMs,
+        )
+      }),
+    ])
+  } catch (error) {
+    await reader.cancel().catch(() => undefined)
+    throw error
+  } finally {
+    if (timeout !== undefined) globalThis.clearTimeout(timeout)
   }
 }
 
