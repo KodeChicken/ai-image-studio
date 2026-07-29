@@ -955,6 +955,10 @@ test('messages show timestamps and live generation elapsed time', async ({ page 
   await outputHeight.fill('128')
   await expect(outputWidth).toHaveValue('960')
   await expect(outputHeight).toHaveValue('128')
+  await expect.poll(async () => {
+    const box = await cropBox.boundingBox()
+    return box ? box.width / box.height : 0
+  }).toBeCloseTo(960 / 128, 1)
   const croppedDownloadStarted = page.waitForEvent('download')
   await imageDialog.getByRole('button', { name: '导出成品' }).click()
   expect((await croppedDownloadStarted).suggestedFilename()).toBe(
@@ -1227,8 +1231,9 @@ test('generation parameters are remembered per model across conversations and re
   await expect(size.locator('.n-base-selection-label')).toContainText('4k')
 
   await page.reload()
-  await expect(size.locator('.n-base-selection-label')).toContainText('1024x1024')
-  await expect(outputFormat.locator('.n-base-selection-label')).toContainText('jpeg')
+  await expect(page.getByRole('heading', { name: secondConversation.title, exact: true })).toBeVisible()
+  await expect(page.locator('.conversation-item').filter({ hasText: secondConversation.title })).toHaveClass(/active/)
+  await expect(size.locator('.n-base-selection-label')).toContainText('4k')
 })
 
 test('conversation title search and complete history filters are functional', async ({ page }) => {

@@ -11,6 +11,7 @@ import {
   latestMessageId,
 } from '@/lib/conversationBranches'
 import { parseImageSize } from '@/lib/imageSizing'
+import { useAuthStore } from '@/stores/auth'
 import type {
   Conversation,
   ConversationDetail,
@@ -24,6 +25,7 @@ import type {
 } from '@/types/api'
 
 const message = useMessage()
+const auth = useAuthStore()
 const conversations = ref<Conversation[]>([])
 const activeConversation = ref<ConversationDetail | null>(null)
 const providers = ref<Provider[]>([])
@@ -196,7 +198,10 @@ onMounted(async () => {
   updateParameterPanelBounds()
   await Promise.all([loadConversations(), loadProviders(), loadModels(), loadTemplates()])
   if (!providerId.value) providerId.value = providers.value[0]?.id ?? null
-  if (conversations.value[0]) await selectConversation(conversations.value[0].id)
+  const rememberedConversationId = readActiveConversation()
+  const initialConversation = conversations.value.find((item) => item.id === rememberedConversationId)
+    ?? conversations.value[0]
+  if (initialConversation) await selectConversation(initialConversation.id)
 })
 
 onBeforeUnmount(() => {
@@ -290,11 +295,32 @@ async function selectConversation(id: string) {
 
 function applySelectedConversation(selected: ConversationDetail) {
   activeConversation.value = selected
+  rememberActiveConversation(selected.id)
   activeLeafId.value = latestMessageId(selected.messages)
   composerParentId.value = null
   providerId.value = selected.defaultProviderId ?? providerId.value
   modelId.value = selected.defaultModelId ?? modelId.value
   mobilePanel.value = null
+}
+
+function activeConversationMemoryKey() {
+  return `studio-active-conversation-v1:${auth.user?.id ?? 'anonymous'}`
+}
+
+function rememberActiveConversation(id: string) {
+  try {
+    localStorage.setItem(activeConversationMemoryKey(), id)
+  } catch {
+    // Keep the studio usable when browser storage is unavailable.
+  }
+}
+
+function readActiveConversation() {
+  try {
+    return localStorage.getItem(activeConversationMemoryKey())
+  } catch {
+    return null
+  }
 }
 
 async function refreshConversationIfActive(conversationId: string) {

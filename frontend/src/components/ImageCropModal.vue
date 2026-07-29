@@ -58,6 +58,11 @@ watch(
   },
 )
 
+watch([outputWidth, outputHeight], ([width, height]) => {
+  if (!cropper || !validOutput.value || width === null || height === null) return
+  cropper.setAspectRatio(width / height)
+})
+
 onBeforeUnmount(destroyCropper)
 
 async function enterCropMode() {
