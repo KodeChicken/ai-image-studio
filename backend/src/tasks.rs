@@ -1456,14 +1456,7 @@ fn exact_size_target(task: &ProcessingTask) -> Option<(u32, u32)> {
     {
         return None;
     }
-    let value = task.request_params.get("size")?.as_str()?.trim();
-    if value.eq_ignore_ascii_case("auto") {
-        return None;
-    }
-    let (width, height) = value.split_once('x')?;
-    let width = width.parse::<u32>().ok()?;
-    let height = height.parse::<u32>().ok()?;
-    (width > 0 && height > 0).then_some((width, height))
+    provider_adapters::effective_openai_dimensions(&task.request_params, &task.upstream_model_id)
 }
 
 async fn compensate_asset(state: &AppState, owner_id: Uuid, asset_id: Uuid) {
@@ -2463,7 +2456,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_size_target_only_applies_to_explicit_gpt_image_2_sizes() {
+    fn exact_size_target_uses_explicit_or_aspect_ratio_gpt_image_2_sizes() {
         let mut task = ProcessingTask {
             id: Uuid::new_v4(),
             user_id: Uuid::new_v4(),
@@ -2480,7 +2473,41 @@ mod tests {
         };
         assert_eq!(exact_size_target(&task), Some((3840, 2160)));
 
+        task.request_params = json!({ "size": "auto", "aspect_ratio": "16:9" });
+        assert_eq!(exact_size_target(&task), Some((1536, 864)));
+
         task.request_params = json!({ "size": "auto" });
         assert_eq!(exact_size_target(&task), None);
+    }
+
+    #[test]
+    fn normalizes_an_incorrect_upstream_orientation_to_the_effective_size() {
+        let task = ProcessingTask {
+            id: Uuid::new_v4(),
+            user_id: Uuid::new_v4(),
+            assistant_message_id: Uuid::new_v4(),
+            provider_id: Uuid::new_v4(),
+            model_id: Uuid::new_v4(),
+            provider_type: "openai-compatible".to_owned(),
+            model_key: "gpt-image-2".to_owned(),
+            operation: "generation".to_owned(),
+            prompt: "test".to_owned(),
+            request_params: json!({ "size": "auto", "aspect_ratio": "16:9" }),
+            upstream_model_id: "gpt-image-2".to_owned(),
+            trace_id: "trace".to_owned(),
+        };
+        let source = image::DynamicImage::new_rgb8(16, 24);
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        source
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .unwrap();
+        let validated = images::validate_image(bytes::Bytes::from(encoded.into_inner())).unwrap();
+
+        let (normalized, metadata) = normalize_result_size(&task, validated).unwrap();
+
+        assert_eq!((normalized.width, normalized.height), (1536, 864));
+        assert_eq!(metadata["sourceWidth"], json!(16));
+        assert_eq!(metadata["sourceHeight"], json!(24));
+        assert_eq!(metadata["requestedSize"], json!("1536x864"));
     }
 }

@@ -1,0 +1,144 @@
+// @vitest-environment jsdom
+
+import { flushPromises, shallowMount } from '@vue/test-utils'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import StudioView from './StudioView.vue'
+
+const apiMock = vi.hoisted(() => vi.fn())
+const streamPostMock = vi.hoisted(() => vi.fn())
+
+vi.mock('@/api/client', () => ({
+  api: apiMock,
+  streamPost: streamPostMock,
+  streamTask: vi.fn(),
+}))
+
+vi.mock('@/stores/auth', () => ({
+  useAuthStore: () => ({ user: { id: 'user-1' } }),
+}))
+
+vi.mock('naive-ui', async () => {
+  const actual = await vi.importActual<typeof import('naive-ui')>('naive-ui')
+  return {
+    ...actual,
+    useMessage: () => ({
+      error: vi.fn(),
+      success: vi.fn(),
+      warning: vi.fn(),
+    }),
+  }
+})
+
+const timestamp = '2026-07-30T09:00:00.000Z'
+const conversation = {
+  id: 'conversation-1',
+  title: '测试会话',
+  status: 'active',
+  defaultProviderId: 'provider-1',
+  defaultModelId: 'model-1',
+  sortOrder: 0,
+  lastMessageAt: timestamp,
+  createdAt: timestamp,
+  updatedAt: timestamp,
+}
+
+describe('StudioView', () => {
+  let completeStream: (() => void) | undefined
+
+  beforeEach(() => {
+    localStorage.clear()
+    Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
+      configurable: true,
+      value: vi.fn(),
+    })
+    vi.stubGlobal('URL', {
+      ...URL,
+      createObjectURL: vi.fn(() => 'blob:reference-preview'),
+      revokeObjectURL: vi.fn(),
+    })
+    apiMock.mockImplementation(async (path: string) => {
+      if (path === '/api/v1/conversations') return [conversation]
+      if (path === '/api/v1/conversations/conversation-1') {
+        return { ...conversation, messages: [] }
+      }
+      if (path === '/api/v1/providers') {
+        return [{
+          id: 'provider-1',
+          providerKey: 'openai',
+          providerType: 'openai-compatible',
+          displayName: 'OpenAI Compatible',
+          baseUrl: 'https://example.test/v1',
+          enabled: true,
+          configJson: {},
+          credentialConfigured: true,
+          modelCount: 1,
+          healthStatus: 'healthy',
+          lastHealthCheckedAt: timestamp,
+          lastHealthError: null,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        }]
+      }
+      if (path === '/api/v1/models?includeDiscovered=true') {
+        return [{
+          id: 'model-1',
+          providerId: 'provider-1',
+          providerType: 'openai-compatible',
+          modelKey: 'gpt-image-2',
+          upstreamModelId: 'gpt-image-2',
+          displayName: 'GPT Image 2',
+          capabilities: {},
+          parameterSchema: { parameters: {} },
+          availabilityStatus: 'verified',
+          discoverySource: 'test',
+          capabilitySource: 'test',
+          lastDiscoveredAt: timestamp,
+          lastVerifiedAt: timestamp,
+          enabled: true,
+        }]
+      }
+      if (path === '/api/v1/prompt-templates?templateType=style') return []
+      if (path === '/api/v1/image-assets/uploads') {
+        return {
+          id: 'asset-1',
+          contentUrl: '/api/v1/image-assets/asset-1/content',
+          mimeType: 'image/png',
+          width: 100,
+          height: 100,
+          fileSizeBytes: 4,
+        }
+      }
+      throw new Error(`Unexpected API request: ${path}`)
+    })
+    streamPostMock.mockImplementation(() => new Promise<void>((resolve) => {
+      completeStream = resolve
+    }))
+  })
+
+  afterEach(() => {
+    completeStream?.()
+    vi.unstubAllGlobals()
+  })
+
+  it('keeps the selected reference image visible while generation is running', async () => {
+    const wrapper = shallowMount(StudioView)
+    await flushPromises()
+    const file = new File(['test'], 'reference.png', { type: 'image/png' })
+    const input = wrapper.get<HTMLInputElement>('input[type="file"]')
+    Object.defineProperty(input.element, 'files', { configurable: true, value: [file] })
+    await input.trigger('change')
+    await wrapper.get('textarea').setValue('参考这张图生成横版海报')
+
+    await wrapper.get('.send-button').trigger('click')
+    await flushPromises()
+
+    const pendingImage = wrapper.get('.pending-message img[alt="参考图 reference.png"]')
+    expect(pendingImage.attributes('src')).toBe('blob:reference-preview')
+    expect(wrapper.get('.pending-message .message-image-meta').text()).toContain('reference.png')
+
+    completeStream?.()
+    await flushPromises()
+    wrapper.unmount()
+  })
+})

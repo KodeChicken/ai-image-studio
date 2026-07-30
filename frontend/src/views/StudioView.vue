@@ -45,6 +45,11 @@ const fileInput = ref<HTMLInputElement | null>(null)
 interface PendingUserMessage {
   content: string
   createdAt: string
+  attachments: Array<{
+    name: string
+    mimeType: string
+    previewUrl: string
+  }>
 }
 interface ConversationTaskState {
   sending: boolean
@@ -421,6 +426,16 @@ function openPartialPreview(contentUrl: string, label: string) {
   imagePreviewOpen.value = true
 }
 
+function openPendingAttachmentPreview(attachment: PendingUserMessage['attachments'][number]) {
+  imagePreview.value = {
+    contentUrl: attachment.previewUrl,
+    label: '参考图',
+    metadata: `${attachment.name} · ${attachment.mimeType}`,
+  }
+  imagePreviewMode.value = 'preview'
+  imagePreviewOpen.value = true
+}
+
 function imageDownloadName(id: string, mimeType: string) {
   const extension = mimeType === 'image/jpeg' ? 'jpg' : mimeType === 'image/webp' ? 'webp' : 'png'
   return `ai-image-studio-${id}.${extension}`
@@ -526,6 +541,11 @@ async function submitMessage(submission: MessageSubmission) {
   state.pendingUserMessage = {
     content: submission.content,
     createdAt: new Date().toISOString(),
+    attachments: composerFiles.map((attachment) => ({
+      name: attachment.file.name,
+      mimeType: attachment.file.type,
+      previewUrl: attachment.previewUrl,
+    })),
   }
   if (submission.useComposerFiles) {
     prompt.value = ''
@@ -1076,6 +1096,23 @@ async function scrollBottom() {
           <div class="message-avatar">你</div>
           <div class="message-body">
             <p>{{ visiblePendingUserMessage.content }}</p>
+            <div v-if="visiblePendingUserMessage.attachments.length" class="message-images">
+              <figure
+                v-for="attachment in visiblePendingUserMessage.attachments"
+                :key="attachment.previewUrl"
+                class="message-image-item"
+              >
+                <button
+                  type="button"
+                  class="message-image-button"
+                  :aria-label="`放大参考图 ${attachment.name}`"
+                  @click="openPendingAttachmentPreview(attachment)"
+                >
+                  <img :src="attachment.previewUrl" :alt="`参考图 ${attachment.name}`" />
+                </button>
+                <figcaption class="message-image-meta">{{ attachment.name }} · {{ attachment.mimeType }}</figcaption>
+              </figure>
+            </div>
             <time class="message-time" :datetime="visiblePendingUserMessage.createdAt">
               发送 {{ formatMessageTime(visiblePendingUserMessage.createdAt) }}
             </time>

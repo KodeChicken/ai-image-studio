@@ -504,6 +504,12 @@ async fn call_openai_images_once(
 ) -> anyhow::Result<Vec<ProviderImage>> {
     let response_limit = image_response_limit(&request);
     let parameters = openai_parameters(&request.parameters, grok, &request.model, edit);
+    let prompt = openai_prompt_with_canvas_requirement(
+        &request.prompt,
+        &request.parameters,
+        &request.model,
+        grok,
+    );
     let native_stream = parameters
         .iter()
         .any(|(key, value)| key == "stream" && value == &json!(true));
@@ -511,7 +517,7 @@ async fn call_openai_images_once(
         let endpoint = format!("{}/images/edits", base_url.trim_end_matches('/'));
         let mut form = reqwest::multipart::Form::new()
             .text("model", request.model)
-            .text("prompt", request.prompt);
+            .text("prompt", prompt);
         for input in request.inputs {
             let part = reqwest::multipart::Part::bytes(input.bytes.to_vec())
                 .file_name(input.filename)
@@ -535,7 +541,7 @@ async fn call_openai_images_once(
         let endpoint = format!("{}/images/generations", base_url.trim_end_matches('/'));
         let mut body = Map::new();
         body.insert("model".to_owned(), json!(request.model));
-        body.insert("prompt".to_owned(), json!(request.prompt));
+        body.insert("prompt".to_owned(), json!(prompt));
         for (key, value) in parameters {
             body.insert(key, value);
         }
@@ -787,6 +793,55 @@ fn size_for_aspect_ratio(model: &str, aspect_ratio: &str) -> Option<&'static str
         "2:3" => Some("1024x1536"),
         _ => None,
     }
+}
+
+pub(crate) fn effective_openai_dimensions(params: &Value, model: &str) -> Option<(u32, u32)> {
+    let explicit_size = params.get("size").and_then(Value::as_str).map(str::trim);
+    let value = match explicit_size {
+        Some(value) if !value.eq_ignore_ascii_case("auto") => value,
+        _ => {
+            let aspect_ratio = params.get("aspect_ratio")?.as_str()?.trim();
+            size_for_aspect_ratio(model, aspect_ratio)?
+        }
+    };
+    let (width, height) = value.split_once('x')?;
+    let width = width.parse::<u32>().ok()?;
+    let height = height.parse::<u32>().ok()?;
+    (width > 0 && height > 0).then_some((width, height))
+}
+
+fn openai_prompt_with_canvas_requirement(
+    prompt: &str,
+    params: &Value,
+    model: &str,
+    grok: bool,
+) -> String {
+    let normalized_model = model.to_ascii_lowercase();
+    if grok || !(normalized_model == "gpt-image-2" || normalized_model.starts_with("gpt-image-2-"))
+    {
+        return prompt.to_owned();
+    }
+    let Some((width, height)) = effective_openai_dimensions(params, model) else {
+        return prompt.to_owned();
+    };
+    let divisor = greatest_common_divisor(width, height);
+    let ratio = format!("{}:{}", width / divisor, height / divisor);
+    let (orientation, excluded_orientations) = match width.cmp(&height) {
+        std::cmp::Ordering::Greater => ("landscape", "portrait or square"),
+        std::cmp::Ordering::Less => ("portrait", "landscape or square"),
+        std::cmp::Ordering::Equal => ("square", "landscape or portrait"),
+    };
+    format!(
+        "{}\n\n[Output canvas requirement: Compose the image on a {orientation} {ratio} canvas with a target size of {width}x{height} pixels. Do not use a {excluded_orientations} canvas.]",
+        prompt.trim_end()
+    )
+}
+
+fn greatest_common_divisor(mut left: u32, mut right: u32) -> u32 {
+    while right != 0 {
+        (left, right) = (right, left % right);
+    }
+    left.max(1)
 }
 
 fn scalar_text(value: &Value) -> anyhow::Result<String> {
@@ -1705,6 +1760,20 @@ mod tests {
             false,
         );
         assert!(dalle_3.contains(&("size".to_owned(), json!("1792x1024"))));
+    }
+
+    #[test]
+    fn gpt_image_2_prompt_reinforces_the_effective_canvas() {
+        let prompt = openai_prompt_with_canvas_requirement(
+            "draw a product poster",
+            &json!({ "size": "auto", "aspect_ratio": "16:9" }),
+            "gpt-image-2",
+            false,
+        );
+
+        assert!(prompt.contains("landscape 16:9 canvas"));
+        assert!(prompt.contains("1536x864 pixels"));
+        assert!(prompt.contains("Do not use a portrait or square canvas"));
     }
 
     #[test]
