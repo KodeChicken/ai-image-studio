@@ -32,7 +32,7 @@ RUN --mount=type=cache,id=ai-image-studio-cargo-registry,target=/usr/local/cargo
     --mount=type=cache,id=ai-image-studio-cargo-target,target=/src/target,sharing=locked \
     cargo test --locked --release --package ai-image-studio-host-updater
 
-FROM docker:28-cli AS docker-cli
+FROM docker:29-cli AS docker-cli
 
 FROM debian:bookworm-slim AS runtime
 ARG APP_VERSION=0.1.3-dev
