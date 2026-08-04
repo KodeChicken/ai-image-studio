@@ -26,7 +26,11 @@ interface MockCropper {
   getCroppedCanvas: ReturnType<typeof vi.fn>
 }
 
-const cropperHarness = vi.hoisted(() => ({ instances: [] as MockCropper[] }))
+const cropperHarness = vi.hoisted(() => ({
+  instances: [] as MockCropper[],
+  naturalWidth: 1024,
+  naturalHeight: 1024,
+}))
 const messageHarness = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn() }))
 
 vi.mock('cropperjs', () => ({
@@ -52,7 +56,12 @@ vi.mock('cropperjs', () => ({
     }
 
     getImageData() {
-      return { naturalWidth: 1024, naturalHeight: 1024, width: 840, height: 840 }
+      return {
+        naturalWidth: cropperHarness.naturalWidth,
+        naturalHeight: cropperHarness.naturalHeight,
+        width: 840,
+        height: 840,
+      }
     }
 
     getData() {
@@ -103,6 +112,8 @@ async function mountCropper() {
 describe('ImageCropModal', () => {
   beforeEach(() => {
     cropperHarness.instances.length = 0
+    cropperHarness.naturalWidth = 1024
+    cropperHarness.naturalHeight = 1024
     messageHarness.success.mockReset()
     messageHarness.error.mockReset()
   })
@@ -135,10 +146,35 @@ describe('ImageCropModal', () => {
     instance.data = { x: 0, y: 0, width: 1024, height: 1024 }
     instance.setData.mockClear()
     await wrapper.get('input[aria-label="裁剪宽度"]').setValue('960')
+    await wrapper.get('input[aria-label="裁剪宽度"]').trigger('blur')
     expect(instance.setData).toHaveBeenLastCalledWith({ x: 32, width: 960 })
     await wrapper.get('input[aria-label="裁剪高度"]').setValue('128')
+    await wrapper.get('input[aria-label="裁剪高度"]').trigger('blur')
     expect(instance.setData).toHaveBeenLastCalledWith({ y: 448, height: 128 })
     expect(wrapper.get<HTMLInputElement>('input[aria-label="裁剪宽度"]').element.value).toBe('960')
+
+    wrapper.unmount()
+  })
+
+  it('waits for a complete 4K dimension before updating the crop box', async () => {
+    cropperHarness.naturalWidth = 4096
+    cropperHarness.naturalHeight = 4096
+    const { wrapper, instance } = await mountCropper()
+    const widthInput = wrapper.get<HTMLInputElement>('input[aria-label="裁剪宽度"]')
+    instance.setData.mockClear()
+
+    for (const value of ['3', '38', '384', '3840']) {
+      widthInput.element.value = value
+      await widthInput.trigger('input')
+    }
+
+    expect(instance.setData).not.toHaveBeenCalled()
+    expect(widthInput.element.value).toBe('3840')
+
+    await widthInput.trigger('blur')
+
+    expect(instance.setData).toHaveBeenCalledWith({ x: 128, width: 3840 })
+    expect(widthInput.element.value).toBe('3840')
 
     wrapper.unmount()
   })
@@ -152,7 +188,9 @@ describe('ImageCropModal', () => {
     })
     const { wrapper, instance } = await mountCropper()
     await wrapper.get('input[aria-label="裁剪宽度"]').setValue('960')
+    await wrapper.get('input[aria-label="裁剪宽度"]').trigger('blur')
     await wrapper.get('input[aria-label="裁剪高度"]').setValue('128')
+    await wrapper.get('input[aria-label="裁剪高度"]').trigger('blur')
 
     const exportButton = wrapper.findAll('button').find((button) => button.text() === '导出成品')
     await exportButton!.trigger('click')
