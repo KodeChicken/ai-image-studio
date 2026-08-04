@@ -511,6 +511,12 @@ async function send() {
   })
 }
 
+function handleComposerKeydown(event: KeyboardEvent) {
+  if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return
+  event.preventDefault()
+  void send()
+}
+
 interface MessageSubmission {
   content: string
   parentMessageId: string | null
@@ -1153,10 +1159,10 @@ async function scrollBottom() {
               <button type="button" :aria-label="`移除参考图 ${attachment.file.name}`" @click="removeFile(index)">×</button>
             </figure>
           </div>
-          <textarea ref="composerInput" v-model="prompt" rows="2" placeholder="继续描述你的画面，或基于上一轮提出修改…" @paste="pasteFiles" @keydown.ctrl.enter.prevent="send"></textarea>
+          <textarea ref="composerInput" v-model="prompt" rows="2" placeholder="继续描述你的画面，或基于上一轮提出修改…" @paste="pasteFiles" @keydown="handleComposerKeydown"></textarea>
           <div class="composer-actions">
             <label class="upload-button">＋ 参考图<input ref="fileInput" type="file" accept="image/png,image/jpeg,image/webp" multiple @change="chooseFiles" /></label>
-            <span class="composer-shortcut">Ctrl + Enter 发送</span>
+            <span class="composer-shortcut">Enter 发送 · Shift + Enter 换行</span>
             <button class="send-button" :disabled="sending || !prompt.trim()" @click="send">{{ sending ? '生成中' : '生成' }} <b>↗</b></button>
           </div>
         </div>

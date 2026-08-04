@@ -47,6 +47,9 @@ describe('StudioView', () => {
   let completeStream: (() => void) | undefined
 
   beforeEach(() => {
+    apiMock.mockReset()
+    streamPostMock.mockReset()
+    completeStream = undefined
     localStorage.clear()
     Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
       configurable: true,
@@ -139,6 +142,50 @@ describe('StudioView', () => {
 
     completeStream?.()
     await flushPromises()
+    wrapper.unmount()
+  })
+
+  it('sends the prompt when Enter is pressed', async () => {
+    const wrapper = shallowMount(StudioView)
+    await flushPromises()
+    const textarea = wrapper.get('textarea')
+    await textarea.setValue('生成一张横版海报')
+    const event = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+
+    textarea.element.dispatchEvent(event)
+    await flushPromises()
+
+    expect(event.defaultPrevented).toBe(true)
+    expect(streamPostMock).toHaveBeenCalledTimes(1)
+
+    completeStream?.()
+    await flushPromises()
+    wrapper.unmount()
+  })
+
+  it('keeps Shift+Enter available for line breaks', async () => {
+    const wrapper = shallowMount(StudioView)
+    await flushPromises()
+    const textarea = wrapper.get('textarea')
+    await textarea.setValue('第一行')
+    const event = new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true, cancelable: true })
+
+    textarea.element.dispatchEvent(event)
+
+    expect(event.defaultPrevented).toBe(false)
+    expect(streamPostMock).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('does not send while an input method composition is active', async () => {
+    const wrapper = shallowMount(StudioView)
+    await flushPromises()
+    const textarea = wrapper.get('textarea')
+    await textarea.setValue('中文输入')
+
+    await textarea.trigger('keydown', { key: 'Enter', isComposing: true })
+
+    expect(streamPostMock).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 })
