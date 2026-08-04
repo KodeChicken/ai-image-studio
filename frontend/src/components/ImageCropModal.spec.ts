@@ -15,6 +15,8 @@ interface CropData {
 interface CropperOptions {
   viewMode: number
   autoCropArea: number
+  minCropBoxWidth: number
+  minCropBoxHeight: number
   ready: () => void
   crop: (event: { detail: CropData }) => void
 }
@@ -128,6 +130,8 @@ describe('ImageCropModal', () => {
 
     expect(instance.options.viewMode).toBe(1)
     expect(instance.options.autoCropArea).toBe(1)
+    expect(instance.options.minCropBoxWidth).toBe(1)
+    expect(instance.options.minCropBoxHeight).toBe(1)
     expect(instance.setData).toHaveBeenCalledWith({ x: 0, y: 0, width: 1024, height: 1024 })
     expect(wrapper.get<HTMLInputElement>('input[aria-label="裁剪宽度"]').element.value).toBe('1024')
     expect(wrapper.get<HTMLInputElement>('input[aria-label="裁剪高度"]').element.value).toBe('1024')
@@ -146,21 +150,20 @@ describe('ImageCropModal', () => {
     instance.data = { x: 0, y: 0, width: 1024, height: 1024 }
     instance.setData.mockClear()
     await wrapper.get('input[aria-label="裁剪宽度"]').setValue('960')
-    await wrapper.get('input[aria-label="裁剪宽度"]').trigger('blur')
     expect(instance.setData).toHaveBeenLastCalledWith({ x: 32, width: 960 })
     await wrapper.get('input[aria-label="裁剪高度"]').setValue('128')
-    await wrapper.get('input[aria-label="裁剪高度"]').trigger('blur')
     expect(instance.setData).toHaveBeenLastCalledWith({ y: 448, height: 128 })
     expect(wrapper.get<HTMLInputElement>('input[aria-label="裁剪宽度"]').element.value).toBe('960')
 
     wrapper.unmount()
   })
 
-  it('waits for a complete 4K dimension before updating the crop box', async () => {
+  it('updates a 4K crop box immediately without interrupting multi-digit input', async () => {
     cropperHarness.naturalWidth = 4096
     cropperHarness.naturalHeight = 4096
     const { wrapper, instance } = await mountCropper()
     const widthInput = wrapper.get<HTMLInputElement>('input[aria-label="裁剪宽度"]')
+    await widthInput.trigger('focus')
     instance.setData.mockClear()
 
     for (const value of ['3', '38', '384', '3840']) {
@@ -168,13 +171,33 @@ describe('ImageCropModal', () => {
       await widthInput.trigger('input')
     }
 
-    expect(instance.setData).not.toHaveBeenCalled()
+    expect(instance.setData).toHaveBeenCalledTimes(3)
+    expect(instance.setData).toHaveBeenLastCalledWith({ x: 128, width: 3840 })
     expect(widthInput.element.value).toBe('3840')
 
     await widthInput.trigger('blur')
 
-    expect(instance.setData).toHaveBeenCalledWith({ x: 128, width: 3840 })
     expect(widthInput.element.value).toBe('3840')
+
+    wrapper.unmount()
+  })
+
+  it('keeps an exact 261px crop dimension on a 4K image', async () => {
+    cropperHarness.naturalWidth = 3840
+    cropperHarness.naturalHeight = 2160
+    const { wrapper, instance } = await mountCropper()
+    const heightInput = wrapper.get<HTMLInputElement>('input[aria-label="裁剪高度"]')
+    await heightInput.trigger('focus')
+    instance.setData.mockClear()
+
+    await heightInput.setValue('261')
+
+    expect(instance.setData).toHaveBeenLastCalledWith({ y: 949.5, height: 261 })
+    expect(instance.data.height).toBe(261)
+    expect(heightInput.element.value).toBe('261')
+
+    await heightInput.trigger('blur')
+    expect(heightInput.element.value).toBe('261')
 
     wrapper.unmount()
   })

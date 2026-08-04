@@ -27,6 +27,9 @@ const sourceWidth = ref<number | null>(null)
 const sourceHeight = ref<number | null>(null)
 const cropWidth = ref<number | null>(null)
 const cropHeight = ref<number | null>(null)
+const cropWidthDraft = ref('')
+const cropHeightDraft = ref('')
+const editingEdge = ref<'width' | 'height' | null>(null)
 const exporting = ref(false)
 let cropper: Cropper | null = null
 let minZoomRatio = 0.01
@@ -91,8 +94,8 @@ function initializeCropper() {
     zoomOnWheel: true,
     cropBoxMovable: true,
     cropBoxResizable: true,
-    minCropBoxWidth: 48,
-    minCropBoxHeight: 48,
+    minCropBoxWidth: 1,
+    minCropBoxHeight: 1,
     toggleDragModeOnDblclick: false,
     ready() {
       if (!cropper) return
@@ -125,16 +128,20 @@ function initializeCropper() {
 function syncCropDimensions(width: number, height: number) {
   cropWidth.value = Math.round(width)
   cropHeight.value = Math.round(height)
+  if (editingEdge.value !== 'width') cropWidthDraft.value = String(cropWidth.value)
+  if (editingEdge.value !== 'height') cropHeightDraft.value = String(cropHeight.value)
   const cropBox = cropImage.value
     ?.parentElement
     ?.querySelector<HTMLElement>('.cropper-crop-box')
   if (cropBox) cropBox.dataset.cropDimensions = `${cropWidth.value} × ${cropHeight.value} px`
 }
 
-function commitCropDimension(edge: 'width' | 'height', event: Event) {
+function updateCropDimension(edge: 'width' | 'height', event: Event) {
   const input = event.target as HTMLInputElement
   const digits = input.value.replace(/\D/g, '')
   if (input.value !== digits) input.value = digits
+  if (edge === 'width') cropWidthDraft.value = digits
+  else cropHeightDraft.value = digits
   const value = digits ? Number(digits) : null
   if (edge === 'width') cropWidth.value = value
   else cropHeight.value = value
@@ -150,15 +157,21 @@ function commitCropDimension(edge: 'width' | 'height', event: Event) {
     const y = Math.max(0, Math.min(cropData.y + (cropData.height - value) / 2, limit - value))
     cropper.setData({ y, height: value })
   }
-  const updated = cropper.getData(true)
-  syncCropDimensions(updated.width, updated.height)
+}
+
+function commitCropDimension(edge: 'width' | 'height') {
+  if (editingEdge.value === edge) editingEdge.value = null
+  if (!cropper) return
+  const cropData = cropper.getData(true)
+  syncCropDimensions(cropData.width, cropData.height)
 }
 
 function blurDimensionInput(event: KeyboardEvent) {
   (event.target as HTMLInputElement).blur()
 }
 
-function selectDimension(event: FocusEvent) {
+function selectDimension(edge: 'width' | 'height', event: FocusEvent) {
+  editingEdge.value = edge
   const input = event.target as HTMLInputElement
   input.select()
 }
@@ -170,6 +183,9 @@ function leaveCropMode() {
   sourceHeight.value = null
   cropWidth.value = null
   cropHeight.value = null
+  cropWidthDraft.value = ''
+  cropHeightDraft.value = ''
+  editingEdge.value = null
   exporting.value = false
 }
 
@@ -262,8 +278,8 @@ function downloadBlob(blob: Blob, filename: string) {
         <aside class="image-crop-controls">
           <strong>裁剪尺寸（原图像素）</strong>
           <div class="image-crop-size-fields">
-            <label>裁剪宽度<input :value="cropWidth ?? ''" type="text" inputmode="numeric" pattern="[0-9]*" aria-label="裁剪宽度" @focus="selectDimension" @blur="commitCropDimension('width', $event)" @keydown.enter.prevent="blurDimensionInput" /></label>
-            <label>裁剪高度<input :value="cropHeight ?? ''" type="text" inputmode="numeric" pattern="[0-9]*" aria-label="裁剪高度" @focus="selectDimension" @blur="commitCropDimension('height', $event)" @keydown.enter.prevent="blurDimensionInput" /></label>
+            <label>裁剪宽度<input :value="cropWidthDraft" type="text" inputmode="numeric" pattern="[0-9]*" aria-label="裁剪宽度" @focus="selectDimension('width', $event)" @input="updateCropDimension('width', $event)" @blur="commitCropDimension('width')" @keydown.enter.prevent="blurDimensionInput" /></label>
+            <label>裁剪高度<input :value="cropHeightDraft" type="text" inputmode="numeric" pattern="[0-9]*" aria-label="裁剪高度" @focus="selectDimension('height', $event)" @input="updateCropDimension('height', $event)" @blur="commitCropDimension('height')" @keydown.enter.prevent="blurDimensionInput" /></label>
           </div>
           <small v-if="sourceWidth && sourceHeight">当前选区直接截取原图，不会缩放或拉伸。</small>
           <small v-if="sourceWidth && sourceHeight && !validCrop" class="image-crop-size-error">宽高需为 16-8192 的整数、不能超过原图 {{ sourceWidth }} × {{ sourceHeight }}，且总像素不能超过 3355 万。</small>
