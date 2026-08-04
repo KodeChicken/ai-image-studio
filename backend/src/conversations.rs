@@ -489,5 +489,5 @@ const CONVERSATION_SELECT: &str = r#"
            sort_order, last_message_at, created_at, updated_at
     FROM conversations
     WHERE user_id = $1 AND status = 'active' AND ($2::UUID IS NULL OR id = $2)
-    ORDER BY sort_order, last_message_at DESC
+    ORDER BY last_message_at DESC, created_at DESC
 "#;

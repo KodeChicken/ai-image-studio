@@ -45,11 +45,13 @@ const conversation = {
 
 describe('StudioView', () => {
   let completeStream: (() => void) | undefined
+  let conversationResponse: Array<typeof conversation>
 
   beforeEach(() => {
     apiMock.mockReset()
     streamPostMock.mockReset()
     completeStream = undefined
+    conversationResponse = [conversation]
     localStorage.clear()
     Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
       configurable: true,
@@ -61,9 +63,11 @@ describe('StudioView', () => {
       revokeObjectURL: vi.fn(),
     })
     apiMock.mockImplementation(async (path: string) => {
-      if (path === '/api/v1/conversations') return [conversation]
-      if (path === '/api/v1/conversations/conversation-1') {
-        return { ...conversation, messages: [] }
+      if (path === '/api/v1/conversations') return conversationResponse
+      if (path.startsWith('/api/v1/conversations/')) {
+        const id = path.slice('/api/v1/conversations/'.length)
+        const selected = conversationResponse.find((item) => item.id === id)
+        if (selected) return { ...selected, messages: [] }
       }
       if (path === '/api/v1/providers') {
         return [{
@@ -142,6 +146,29 @@ describe('StudioView', () => {
 
     completeStream?.()
     await flushPromises()
+    wrapper.unmount()
+  })
+
+  it('shows the most recently used conversation first', async () => {
+    conversationResponse = [
+      conversation,
+      {
+        ...conversation,
+        id: 'conversation-2',
+        title: '最近会话',
+        lastMessageAt: '2026-07-31T09:00:00.000Z',
+        createdAt: '2026-07-31T08:00:00.000Z',
+        updatedAt: '2026-07-31T09:00:00.000Z',
+      },
+    ]
+    const wrapper = shallowMount(StudioView)
+    await flushPromises()
+
+    expect(wrapper.findAll('.conversation-item strong').map((item) => item.text())).toEqual([
+      '最近会话',
+      '测试会话',
+    ])
+
     wrapper.unmount()
   })
 

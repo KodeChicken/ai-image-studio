@@ -73,7 +73,6 @@ const messageTimeFormatter = new Intl.DateTimeFormat('zh-CN', {
 })
 const editingTitle = ref<string | null>(null)
 const titleDraft = ref('')
-const draggedIndex = ref<number | null>(null)
 const timeline = ref<HTMLElement | null>(null)
 const composerInput = ref<HTMLTextAreaElement | null>(null)
 const activeLeafId = ref<string | null>(null)
@@ -276,7 +275,16 @@ function messageTimeText(item: ConversationMessage) {
 }
 
 async function loadConversations() {
-  conversations.value = await api<Conversation[]>('/api/v1/conversations')
+  conversations.value = sortConversations(await api<Conversation[]>('/api/v1/conversations'))
+  const activeSummary = conversations.value.find((item) => item.id === activeConversation.value?.id)
+  if (activeSummary && activeConversation.value) Object.assign(activeConversation.value, activeSummary)
+}
+
+function sortConversations(items: Conversation[]) {
+  return [...items].sort((left, right) => {
+    const lastMessageDifference = Date.parse(right.lastMessageAt) - Date.parse(left.lastMessageAt)
+    return lastMessageDifference || Date.parse(right.createdAt) - Date.parse(left.createdAt)
+  })
 }
 
 async function loadProviders() {
@@ -347,7 +355,7 @@ async function createConversation() {
       defaultModelId: modelId.value,
     }),
   })
-  conversations.value.push(created)
+  conversations.value = sortConversations([created, ...conversations.value])
   await selectConversation(created.id)
 }
 
@@ -366,18 +374,6 @@ async function saveTitle(item: Conversation) {
   Object.assign(item, updated)
   if (activeConversation.value?.id === item.id) activeConversation.value.title = title
   editingTitle.value = null
-}
-
-async function dropConversation(targetIndex: number) {
-  if (draggedIndex.value === null || draggedIndex.value === targetIndex) return
-  const [moved] = conversations.value.splice(draggedIndex.value, 1)
-  if (!moved) return
-  conversations.value.splice(targetIndex, 0, moved)
-  draggedIndex.value = null
-  await api<void>('/api/v1/conversations/order', {
-    method: 'PUT',
-    body: JSON.stringify({ conversationIds: conversations.value.map((item) => item.id) }),
-  })
 }
 
 function appendFiles(selectedFiles: File[]) {
@@ -633,6 +629,7 @@ function handleTaskEvent(conversationId: string, state: ConversationTaskState, e
   if (event.type === 'task.created') {
     state.taskStage = '等待生成资源'
     if (typeof event.data.taskId === 'string') state.activeTaskId = event.data.taskId
+    void loadConversations().catch(() => undefined)
   }
   if (event.type === 'task.progress') {
     const stage = String(event.data.stage ?? '')
@@ -957,17 +954,12 @@ async function scrollBottom() {
       <n-input v-model:value="conversationSearch" clearable placeholder="搜索会话标题" size="small" />
       <div class="conversation-list">
         <article
-          v-for="(item, index) in filteredConversations"
+          v-for="item in filteredConversations"
           :key="item.id"
           class="conversation-item"
           :class="{ active: item.id === activeConversation?.id }"
-          :draggable="!conversationSearch.trim()"
-          @dragstart="draggedIndex = index"
-          @dragover.prevent
-          @drop="dropConversation(index)"
           @click="selectConversation(item.id)"
         >
-          <span class="drag-handle">⠿</span>
           <div v-if="editingTitle === item.id" class="title-editor" @click.stop>
             <input v-model="titleDraft" autofocus @keyup.enter="saveTitle(item)" @keyup.esc="editingTitle = null" @blur="saveTitle(item)" />
           </div>

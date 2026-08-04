@@ -225,6 +225,7 @@ pub struct TaskCreated {
 
 #[derive(FromRow)]
 struct ConversationDefaults {
+    title: String,
     default_provider_id: Option<Uuid>,
     default_model_id: Option<Uuid>,
 }
@@ -244,7 +245,7 @@ pub async fn create_task(
     let mut tx = state.db.begin().await?;
     let conversation = sqlx::query_as::<_, ConversationDefaults>(
         r#"
-        SELECT default_provider_id, default_model_id
+        SELECT title, default_provider_id, default_model_id
         FROM conversations
         WHERE id = $1 AND user_id = $2 AND status = 'active'
         FOR UPDATE
@@ -284,6 +285,8 @@ pub async fn create_task(
     .bind(request.conversation_id)
     .fetch_one(&mut *tx)
     .await?;
+    let generated_title =
+        generated_title_for_first_prompt(&conversation.title, sequence, &request.content);
     let user_message_id = Uuid::new_v4();
     let assistant_message_id = Uuid::new_v4();
     sqlx::query(
@@ -395,12 +398,13 @@ pub async fn create_task(
         r#"
         UPDATE conversations
         SET default_provider_id = $1, default_model_id = $2,
-            last_message_at = NOW(), updated_at = NOW()
-        WHERE id = $3
+            title = COALESCE($3, title), last_message_at = NOW(), updated_at = NOW()
+        WHERE id = $4
         "#,
     )
     .bind(selection.provider_id)
     .bind(selection.model_id)
+    .bind(generated_title)
     .bind(request.conversation_id)
     .execute(&mut *tx)
     .await?;
@@ -423,6 +427,27 @@ pub async fn create_task(
         message_id: assistant_message_id,
         task_id,
     })
+}
+
+fn conversation_title_from_prompt(content: &str) -> String {
+    const MAX_CHARS: usize = 30;
+    let normalized = content.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut chars = normalized.chars();
+    let title = chars.by_ref().take(MAX_CHARS).collect::<String>();
+    if chars.next().is_some() {
+        format!("{title}…")
+    } else {
+        title
+    }
+}
+
+fn generated_title_for_first_prompt(
+    current_title: &str,
+    sequence: i64,
+    content: &str,
+) -> Option<String> {
+    (sequence == 1 && matches!(current_title, "新会话" | "新生图会话"))
+        .then(|| conversation_title_from_prompt(content))
 }
 
 fn spawn_processing(state: AppState, task_id: Uuid) {
@@ -2266,6 +2291,30 @@ async fn retry(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn derives_a_compact_conversation_title_from_the_first_prompt() {
+        assert_eq!(
+            conversation_title_from_prompt("  生成一张\n  夏日海边的宣传海报  "),
+            "生成一张 夏日海边的宣传海报"
+        );
+        assert_eq!(
+            conversation_title_from_prompt(&"图".repeat(31)),
+            format!("{}…", "图".repeat(30))
+        );
+        assert_eq!(
+            generated_title_for_first_prompt("新会话", 1, "生成森林海报"),
+            Some("生成森林海报".to_owned())
+        );
+        assert_eq!(
+            generated_title_for_first_prompt("手动标题", 1, "生成森林海报"),
+            None
+        );
+        assert_eq!(
+            generated_title_for_first_prompt("新会话", 3, "继续修改海报"),
+            None
+        );
+    }
 
     #[test]
     fn appends_the_previous_conversation_image_after_explicit_references() {

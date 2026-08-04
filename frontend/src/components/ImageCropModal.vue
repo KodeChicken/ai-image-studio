@@ -23,8 +23,10 @@ const emit = defineEmits<{ 'update:show': [value: boolean] }>()
 const message = useMessage()
 const cropImage = ref<HTMLImageElement | null>(null)
 const cropMode = ref(false)
-const outputWidth = ref<number | null>(null)
-const outputHeight = ref<number | null>(null)
+const sourceWidth = ref<number | null>(null)
+const sourceHeight = ref<number | null>(null)
+const cropWidth = ref<number | null>(null)
+const cropHeight = ref<number | null>(null)
 const exporting = ref(false)
 let cropper: Cropper | null = null
 let minZoomRatio = 0.01
@@ -32,21 +34,23 @@ let maxZoomRatio = 8
 
 const canCrop = computed(() => Boolean(
   props.image?.id
-  && props.image.width
-  && props.image.height
   && props.image.mimeType,
 ))
-const validOutput = computed(() => {
-  const width = outputWidth.value
-  const height = outputHeight.value
+const validCrop = computed(() => {
+  const width = cropWidth.value
+  const height = cropHeight.value
   return width !== null
     && height !== null
+    && sourceWidth.value !== null
+    && sourceHeight.value !== null
     && Number.isInteger(width)
     && Number.isInteger(height)
     && width >= 16
     && height >= 16
     && width <= 8192
     && height <= 8192
+    && width <= sourceWidth.value
+    && height <= sourceHeight.value
     && width * height <= 33_554_432
 })
 
@@ -62,20 +66,22 @@ onBeforeUnmount(destroyCropper)
 
 async function enterCropMode() {
   if (!props.image || !canCrop.value) return
-  outputWidth.value = props.image.width ?? null
-  outputHeight.value = props.image.height ?? null
+  sourceWidth.value = null
+  sourceHeight.value = null
+  cropWidth.value = null
+  cropHeight.value = null
   cropMode.value = true
   await nextTick()
   if (cropImage.value?.complete) initializeCropper()
 }
 
 function initializeCropper() {
-  if (!cropImage.value || !validOutput.value) return
+  if (!cropImage.value) return
   destroyCropper()
   cropper = new Cropper(cropImage.value, {
-    viewMode: 0,
+    viewMode: 1,
     dragMode: 'move',
-    autoCropArea: 0.82,
+    autoCropArea: 1,
     background: false,
     center: true,
     guides: true,
@@ -91,14 +97,22 @@ function initializeCropper() {
     ready() {
       if (!cropper) return
       const imageData = cropper.getImageData()
+      sourceWidth.value = Math.round(imageData.naturalWidth)
+      sourceHeight.value = Math.round(imageData.naturalHeight)
       const initialZoom = imageData.naturalWidth > 0 ? imageData.width / imageData.naturalWidth : 1
       minZoomRatio = Math.max(initialZoom * 0.25, 0.01)
       maxZoomRatio = Math.max(initialZoom * 8, initialZoom + 2)
+      cropper.setData({
+        x: 0,
+        y: 0,
+        width: sourceWidth.value,
+        height: sourceHeight.value,
+      })
       const cropData = cropper.getData(true)
-      updateCropDimensions(cropData.width, cropData.height)
+      syncCropDimensions(cropData.width, cropData.height)
     },
     crop(event) {
-      updateCropDimensions(event.detail.width, event.detail.height)
+      syncCropDimensions(event.detail.width, event.detail.height)
     },
     zoom(event) {
       if (event.detail.ratio < minZoomRatio || event.detail.ratio > maxZoomRatio) {
@@ -108,20 +122,36 @@ function initializeCropper() {
   })
 }
 
-function updateCropDimensions(width: number, height: number) {
+function syncCropDimensions(width: number, height: number) {
+  cropWidth.value = Math.round(width)
+  cropHeight.value = Math.round(height)
   const cropBox = cropImage.value
     ?.parentElement
     ?.querySelector<HTMLElement>('.cropper-crop-box')
-  if (cropBox) cropBox.dataset.cropDimensions = `${Math.round(width)} × ${Math.round(height)} px`
+  if (cropBox) cropBox.dataset.cropDimensions = `${cropWidth.value} × ${cropHeight.value} px`
 }
 
-function updateOutputDimension(edge: 'width' | 'height', event: Event) {
+function updateCropDimension(edge: 'width' | 'height', event: Event) {
   const input = event.target as HTMLInputElement
   const digits = input.value.replace(/\D/g, '')
   if (input.value !== digits) input.value = digits
   const value = digits ? Number(digits) : null
-  if (edge === 'width') outputWidth.value = value
-  else outputHeight.value = value
+  if (edge === 'width') cropWidth.value = value
+  else cropHeight.value = value
+  if (!cropper || value === null || !Number.isInteger(value) || value < 16) return
+
+  const limit = edge === 'width' ? sourceWidth.value : sourceHeight.value
+  if (limit === null || value > limit || value > 8192) return
+  const cropData = cropper.getData(true)
+  if (edge === 'width') {
+    const x = Math.max(0, Math.min(cropData.x + (cropData.width - value) / 2, limit - value))
+    cropper.setData({ x, width: value })
+  } else {
+    const y = Math.max(0, Math.min(cropData.y + (cropData.height - value) / 2, limit - value))
+    cropper.setData({ y, height: value })
+  }
+  const updated = cropper.getData(true)
+  syncCropDimensions(updated.width, updated.height)
 }
 
 function selectDimension(event: FocusEvent) {
@@ -132,6 +162,10 @@ function selectDimension(event: FocusEvent) {
 function leaveCropMode() {
   destroyCropper()
   cropMode.value = false
+  sourceWidth.value = null
+  sourceHeight.value = null
+  cropWidth.value = null
+  cropHeight.value = null
   exporting.value = false
 }
 
@@ -145,20 +179,25 @@ function close() {
 }
 
 async function exportCrop() {
-  if (!cropper || !props.image || !validOutput.value) return
+  if (!cropper || !props.image || !validCrop.value) return
   exporting.value = true
   try {
     const mimeType = supportedOutputMime(props.image.mimeType)
+    const cropData = cropper.getData(true)
+    const width = Math.round(cropData.width)
+    const height = Math.round(cropData.height)
     const canvas = cropper.getCroppedCanvas({
-      width: outputWidth.value!,
-      height: outputHeight.value!,
+      rounded: true,
       imageSmoothingEnabled: true,
       imageSmoothingQuality: 'high',
       fillColor: mimeType === 'image/jpeg' ? '#ffffff' : undefined,
     })
+    if (!canvas || canvas.width !== width || canvas.height !== height) {
+      throw new Error('裁剪结果尺寸与原图选区不一致')
+    }
     const blob = await canvasBlob(canvas, mimeType)
-    downloadBlob(blob, cropDownloadName(props.image, mimeType, outputWidth.value!, outputHeight.value!))
-    message.success(`已导出 ${outputWidth.value} × ${outputHeight.value}`)
+    downloadBlob(blob, cropDownloadName(props.image, mimeType, width, height))
+    message.success(`已导出 ${width} × ${height}`)
   } catch (error) {
     message.error(error instanceof Error ? error.message : '裁剪结果导出失败')
   } finally {
@@ -207,7 +246,7 @@ function downloadBlob(blob: Blob, filename: string) {
       <header>
         <div>
           <strong>{{ cropMode ? '裁剪与缩放' : image.label }}</strong>
-          <span>{{ cropMode ? `输出尺寸 ${outputWidth || '—'} × ${outputHeight || '—'}` : image.metadata }}</span>
+          <span>{{ cropMode ? `原图尺寸 ${sourceWidth || '—'} × ${sourceHeight || '—'}` : image.metadata }}</span>
         </div>
         <button type="button" aria-label="关闭图片预览" @click="close">×</button>
       </header>
@@ -217,15 +256,16 @@ function downloadBlob(blob: Blob, filename: string) {
           <img ref="cropImage" :src="image.contentUrl" :alt="image.label" @load="initializeCropper" />
         </div>
         <aside class="image-crop-controls">
-          <strong>输出尺寸</strong>
+          <strong>裁剪尺寸（原图像素）</strong>
           <div class="image-crop-size-fields">
-            <label>输出宽度<input :value="outputWidth ?? ''" type="text" inputmode="numeric" pattern="[0-9]*" aria-label="输出宽度" @input="updateOutputDimension('width', $event)" @focus="selectDimension" /></label>
-            <label>输出高度<input :value="outputHeight ?? ''" type="text" inputmode="numeric" pattern="[0-9]*" aria-label="输出高度" @input="updateOutputDimension('height', $event)" @focus="selectDimension" /></label>
+            <label>裁剪宽度<input :value="cropWidth ?? ''" type="text" inputmode="numeric" pattern="[0-9]*" aria-label="裁剪宽度" @input="updateCropDimension('width', $event)" @focus="selectDimension" /></label>
+            <label>裁剪高度<input :value="cropHeight ?? ''" type="text" inputmode="numeric" pattern="[0-9]*" aria-label="裁剪高度" @input="updateCropDimension('height', $event)" @focus="selectDimension" /></label>
           </div>
-          <small v-if="!validOutput" class="image-crop-size-error">宽高需为 16-8192 的整数，且总像素不能超过 3355 万。</small>
+          <small v-if="sourceWidth && sourceHeight">当前选区直接截取原图，不会缩放或拉伸。</small>
+          <small v-if="sourceWidth && sourceHeight && !validCrop" class="image-crop-size-error">宽高需为 16-8192 的整数、不能超过原图 {{ sourceWidth }} × {{ sourceHeight }}，且总像素不能超过 3355 万。</small>
           <div class="image-crop-actions">
             <n-button @click="leaveCropMode">返回预览</n-button>
-            <n-button type="primary" :loading="exporting" :disabled="!validOutput" @click="exportCrop">导出成品</n-button>
+            <n-button type="primary" :loading="exporting" :disabled="!validCrop" @click="exportCrop">导出成品</n-button>
           </div>
         </aside>
       </div>
