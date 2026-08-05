@@ -82,10 +82,13 @@ function Wait-CompletedTask {
 }
 
 function New-TestTask {
-    param([string] $Content)
+    param(
+        [string] $Content,
+        [string] $ConversationId = $conversation.id
+    )
 
     Invoke-RestMethod `
-        -Uri ("http://127.0.0.1:{0}/api/v1/conversations/{1}/messages" -f $appPort, $conversation.id) `
+        -Uri ("http://127.0.0.1:{0}/api/v1/conversations/{1}/messages" -f $appPort, $ConversationId) `
         -Method Post `
         -ContentType 'application/json' `
         -Body (@{
@@ -299,7 +302,17 @@ $env:ALLOW_PRIVATE_PROVIDER_HOSTS = 'true'
         throw 'Worker did not recover the missing Redis message from PostgreSQL'
     }
 
-    $retry = New-TestTask -Content 'FAIL_ONCE_RETRY_TEST'
+    $retryConversation = Invoke-RestMethod `
+        -Uri "http://127.0.0.1:$appPort/api/v1/conversations" `
+        -Method Post `
+        -ContentType 'application/json' `
+        -Body (@{
+            title = 'Redis worker retry integration'
+            defaultProviderId = $provider.id
+            defaultModelId = $model.id
+        } | ConvertTo-Json) `
+        -WebSession $session
+    $retry = New-TestTask -Content 'FAIL_ONCE_RETRY_TEST' -ConversationId $retryConversation.id
     $retryCompleted = Wait-CompletedTask -TaskId $retry.taskId -Attempts 100
     if ($retryCompleted.retryCount -ne 1) {
         throw "Expected one automatic retry, got $($retryCompleted.retryCount)"
