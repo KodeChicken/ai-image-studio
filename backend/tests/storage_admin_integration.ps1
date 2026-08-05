@@ -360,12 +360,19 @@ $env:ALLOW_PRIVATE_PROVIDER_HOSTS = 'true'
     $objects = @(docker run --rm --network ("container:{0}" -f $minioContainer) `
             --entrypoint /bin/sh minio/mc:RELEASE.2024-10-08T09-37-26Z `
             -c "mc alias set integration http://127.0.0.1:9000 minioadmin minioadmin123 >/dev/null && mc ls --recursive --json integration/$bucket/$s3Prefix")
-    $objectCount = @($objects | Where-Object { $_.Trim() }).Count
-    if ($objectCount -ne 1) {
-        throw "Expected one durable S3 object after health-check cleanup, got $objectCount"
+    $objectEntries = @($objects | Where-Object { $_.Trim() } | ForEach-Object {
+            $_ | ConvertFrom-Json
+        })
+    $objectKeys = @($objectEntries | ForEach-Object { $_.key })
+    $healthCheckObjects = @($objectKeys | Where-Object { $_ -like 'health-check/*' })
+    if ($healthCheckObjects.Count -ne 0) {
+        throw "Storage health check left temporary objects: $($healthCheckObjects -join ', ')"
+    }
+    if ($objectEntries.Count -ne 2) {
+        throw "Expected one durable S3 image and one live partial preview, got $($objectEntries.Count) ($($objectKeys -join ', '))"
     }
 
-    Write-Output 'STORAGE_ADMIN_INTEGRATION_OK s3_round_trip=1 persisted_switch=1 no_secret_echo=1 local_s3_counts=1 mixed_reads=1 health_object_cleanup=1'
+    Write-Output 'STORAGE_ADMIN_INTEGRATION_OK s3_round_trip=1 persisted_switch=1 no_secret_echo=1 local_s3_counts=1 mixed_reads=1 health_object_cleanup=1 partial_preview_ttl=1'
 }
 finally {
     foreach ($process in @($appProcess, $mockProcess)) {
