@@ -7,6 +7,7 @@ pub mod consistency;
 pub mod conversations;
 pub mod error;
 pub mod history;
+pub mod image_editor;
 pub mod images;
 pub mod models;
 pub mod prompt_templates;

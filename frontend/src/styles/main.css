@@ -176,7 +176,7 @@ body.parameter-panel-resizing * { cursor: col-resize !important; }
 .message-image-button span { display: block; padding: 8px 2px 0; color: var(--muted); font-size: 10px; }
 .message-image-meta { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; padding: 8px 2px 0; color: var(--muted); font-size: 10px; }
 .image-asset-actions { display: inline-flex; flex: none; align-items: center; gap: 4px; }
-.image-download-button, .image-edit-button { display: inline-flex; flex: none; align-items: center; padding: 5px 8px; border: 0; border-radius: 7px; background: transparent; color: var(--brand); font: inherit; font-size: 10px; font-weight: 650; cursor: pointer; }
+.image-download-button, .image-edit-button { display: inline-flex; flex: none; align-items: center; padding: 5px 8px; border: 0; border-radius: 7px; background: transparent; color: var(--brand); font: inherit; font-size: 10px; font-weight: 650; text-decoration: none; cursor: pointer; }
 .image-download-button:hover, .image-edit-button:hover { background: var(--brand-soft); }
 .message-footer { display: flex; min-height: 28px; align-items: center; justify-content: space-between; gap: 12px; margin-top: 9px; }
 .branch-switcher, .message-actions { display: flex; align-items: center; gap: 5px; }

@@ -215,11 +215,27 @@ pub struct NewTaskRequest {
     pub style_prompt: Option<String>,
 }
 
+pub struct NewEditorTaskRequest {
+    pub edit_document_id: Uuid,
+    pub content: String,
+    pub provider_id: Uuid,
+    pub model_id: Uuid,
+    pub parameters: Value,
+    pub input_asset_ids: Vec<Uuid>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskCreated {
     pub conversation_id: Uuid,
     pub message_id: Uuid,
+    pub task_id: Uuid,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EditorTaskCreated {
+    pub edit_document_id: Uuid,
     pub task_id: Uuid,
 }
 
@@ -429,6 +445,113 @@ pub async fn create_task(
     })
 }
 
+pub async fn create_editor_task(
+    state: &AppState,
+    user_id: Uuid,
+    request: NewEditorTaskRequest,
+) -> AppResult<EditorTaskCreated> {
+    let mut tx = state.db.begin().await?;
+    let owned = sqlx::query_scalar::<_, bool>(
+        r#"
+        SELECT EXISTS(
+            SELECT 1 FROM image_edit_documents
+            WHERE id = $1 AND owner_id = $2
+        )
+        "#,
+    )
+    .bind(request.edit_document_id)
+    .bind(user_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if !owned {
+        return Err(AppError::NotFound);
+    }
+    let selection = resolve_model_selection(
+        &mut tx,
+        user_id,
+        Some(request.provider_id),
+        Some(request.model_id),
+    )
+    .await?;
+    let input_asset_ids =
+        validate_explicit_assets(&mut tx, user_id, &request.input_asset_ids).await?;
+    if input_asset_ids.is_empty() {
+        return Err(AppError::Validation(
+            "editor image tasks require a source asset".to_owned(),
+        ));
+    }
+    validate_task_parameters(&request.parameters, &selection.parameter_schema, "edit")?;
+    let prompt = if request.content.trim().is_empty() {
+        "自然延展原图内容并保持主体、光线和风格连续。".to_owned()
+    } else {
+        request.content.trim().to_owned()
+    };
+    let task_id = Uuid::new_v4();
+    let trace_id = Uuid::new_v4().simple().to_string();
+    let mut request_snapshot = request.parameters;
+    if let Value::Object(values) = &mut request_snapshot {
+        values.insert(
+            "context_asset_ids".to_owned(),
+            Value::Array(
+                input_asset_ids
+                    .iter()
+                    .copied()
+                    .map(|id| json!(id))
+                    .collect(),
+            ),
+        );
+    }
+    sqlx::query(
+        r#"
+        INSERT INTO image_tasks (
+            id, user_id, edit_document_id, model_id, provider_id,
+            operation, status, prompt, request_params, trace_id
+        ) VALUES ($1, $2, $3, $4, $5, 'edit', 'pending', $6, $7, $8)
+        "#,
+    )
+    .bind(task_id)
+    .bind(user_id)
+    .bind(request.edit_document_id)
+    .bind(selection.model_id)
+    .bind(selection.provider_id)
+    .bind(prompt)
+    .bind(request_snapshot)
+    .bind(trace_id)
+    .execute(&mut *tx)
+    .await?;
+    for (index, asset_id) in input_asset_ids.iter().enumerate() {
+        sqlx::query(
+            r#"
+            INSERT INTO task_input_images (task_id, asset_id, input_index, input_role)
+            VALUES ($1, $2, $3, $4)
+            "#,
+        )
+        .bind(task_id)
+        .bind(asset_id)
+        .bind(index as i32)
+        .bind(if index == 0 { "source" } else { "reference" })
+        .execute(&mut *tx)
+        .await?;
+    }
+    insert_event(
+        &mut tx,
+        task_id,
+        "task.created",
+        None,
+        Some("pending"),
+        json!({
+            "taskId": task_id,
+            "editDocumentId": request.edit_document_id
+        }),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(EditorTaskCreated {
+        edit_document_id: request.edit_document_id,
+        task_id,
+    })
+}
+
 fn conversation_title_from_prompt(content: &str) -> String {
     const MAX_CHARS: usize = 30;
     let normalized = content.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -598,7 +721,8 @@ fn schedule_retry(state: AppState, task_id: Uuid) {
 struct ProcessingTask {
     id: Uuid,
     user_id: Uuid,
-    assistant_message_id: Uuid,
+    assistant_message_id: Option<Uuid>,
+    edit_document_id: Option<Uuid>,
     provider_id: Uuid,
     model_id: Uuid,
     provider_type: String,
@@ -622,7 +746,8 @@ struct TaskInput {
 async fn process_task(state: &AppState, task_id: Uuid) -> anyhow::Result<()> {
     let task = sqlx::query_as::<_, ProcessingTask>(
         r#"
-        SELECT t.id, t.user_id, t.assistant_message_id, t.provider_id, t.model_id,
+        SELECT t.id, t.user_id, t.assistant_message_id, t.edit_document_id,
+               t.provider_id, t.model_id,
                p.provider_type, m.model_key, t.operation, t.prompt, t.request_params,
                m.upstream_model_id, t.trace_id
         FROM image_tasks t
@@ -741,7 +866,23 @@ async fn process_task(state: &AppState, task_id: Uuid) -> anyhow::Result<()> {
                 return Err(error);
             }
         };
-        let asset = match images::persist_asset(state, task.user_id, None, validated).await {
+        let persisted = if let (Some(edit_document_id), Some(parent_asset)) =
+            (task.edit_document_id, inputs.first())
+        {
+            images::persist_derived_asset(
+                state,
+                task.user_id,
+                None,
+                validated,
+                parent_asset.id,
+                edit_document_id,
+                "ai_edited",
+            )
+            .await
+        } else {
+            images::persist_asset(state, task.user_id, None, validated).await
+        };
+        let asset = match persisted {
             Ok(asset) => asset,
             Err(error) => {
                 cleanup_task_assets(state, &task, &completed_assets).await;
@@ -780,13 +921,15 @@ async fn process_task(state: &AppState, task_id: Uuid) -> anyhow::Result<()> {
         cleanup_task_assets(state, &task, &completed_assets).await;
         return Ok(());
     }
-    sqlx::query(
-        "UPDATE conversation_messages SET status = 'completed', content = $1, updated_at = NOW() WHERE id = $2",
-    )
-    .bind(format!("已生成 {} 张图片", completed_assets.len()))
-    .bind(task.assistant_message_id)
-    .execute(&mut *tx)
-    .await?;
+    if let Some(assistant_message_id) = task.assistant_message_id {
+        sqlx::query(
+            "UPDATE conversation_messages SET status = 'completed', content = $1, updated_at = NOW() WHERE id = $2",
+        )
+        .bind(format!("已生成 {} 张图片", completed_assets.len()))
+        .bind(assistant_message_id)
+        .execute(&mut *tx)
+        .await?;
+    }
     insert_event(
         &mut tx,
         task_id,
@@ -1424,17 +1567,19 @@ async fn link_result(
         .bind(&metadata)
         .execute(&mut *tx)
         .await?;
-    sqlx::query(
-        r#"
-        INSERT INTO message_image_assets (message_id, asset_id, relation_type, sort_order)
-        VALUES ($1, $2, 'generated', $3)
-        "#,
-    )
-    .bind(task.assistant_message_id)
-    .bind(asset.id)
-    .bind(index)
-    .execute(&mut *tx)
-    .await?;
+    if let Some(assistant_message_id) = task.assistant_message_id {
+        sqlx::query(
+            r#"
+            INSERT INTO message_image_assets (message_id, asset_id, relation_type, sort_order)
+            VALUES ($1, $2, 'generated', $3)
+            "#,
+        )
+        .bind(assistant_message_id)
+        .bind(asset.id)
+        .bind(index)
+        .execute(&mut *tx)
+        .await?;
+    }
     insert_event(
         &mut tx,
         task.id,
@@ -1515,13 +1660,15 @@ async fn cleanup_task_assets(
     let asset_ids: Vec<_> = assets.iter().map(|asset| asset.id).collect();
     let cleanup = async {
         let mut tx = state.db.begin().await?;
-        sqlx::query(
-            "DELETE FROM message_image_assets WHERE message_id = $1 AND asset_id = ANY($2)",
-        )
-        .bind(task.assistant_message_id)
-        .bind(&asset_ids)
-        .execute(&mut *tx)
-        .await?;
+        if let Some(assistant_message_id) = task.assistant_message_id {
+            sqlx::query(
+                "DELETE FROM message_image_assets WHERE message_id = $1 AND asset_id = ANY($2)",
+            )
+            .bind(assistant_message_id)
+            .bind(&asset_ids)
+            .execute(&mut *tx)
+            .await?;
+        }
         sqlx::query("DELETE FROM image_results WHERE task_id = $1 AND asset_id = ANY($2)")
             .bind(task.id)
             .bind(&asset_ids)
@@ -1545,7 +1692,7 @@ async fn cleanup_task_assets(
 
 #[derive(FromRow)]
 struct FailureUpdate {
-    assistant_message_id: Uuid,
+    assistant_message_id: Option<Uuid>,
     status: String,
     retry_count: i32,
 }
@@ -1580,21 +1727,23 @@ async fn fail_task(state: &AppState, task_id: Uuid, error: &anyhow::Error) -> an
     .await?;
     if let Some(update) = update {
         let retrying = update.status == "retrying";
-        sqlx::query(
-            "UPDATE conversation_messages SET status = $1, content = $2, updated_at = NOW() WHERE id = $3",
-        )
-        .bind(if retrying { "streaming" } else { "failed" })
-        .bind(if retrying {
-            format!(
-                "正在自动重试（{}/{}）",
-                update.retry_count, state.settings.task_max_retries
+        if let Some(assistant_message_id) = update.assistant_message_id {
+            sqlx::query(
+                "UPDATE conversation_messages SET status = $1, content = $2, updated_at = NOW() WHERE id = $3",
             )
-        } else {
-            user_message.clone()
-        })
-        .bind(update.assistant_message_id)
-        .execute(&mut *tx)
-        .await?;
+            .bind(if retrying { "streaming" } else { "failed" })
+            .bind(if retrying {
+                format!(
+                    "正在自动重试（{}/{}）",
+                    update.retry_count, state.settings.task_max_retries
+                )
+            } else {
+                user_message.clone()
+            })
+            .bind(assistant_message_id)
+            .execute(&mut *tx)
+            .await?;
+        }
         insert_event(
             &mut tx,
             task_id,
@@ -1626,7 +1775,7 @@ async fn fail_task(state: &AppState, task_id: Uuid, error: &anyhow::Error) -> an
 
 async fn mark_dispatch_failure(state: &AppState, task_id: Uuid, message: &str) -> AppResult<()> {
     let mut tx = state.db.begin().await?;
-    let task = sqlx::query_as::<_, (Uuid, String)>(
+    let task = sqlx::query_as::<_, (Option<Uuid>, String)>(
         r#"
         SELECT assistant_message_id, status
         FROM image_tasks
@@ -1654,12 +1803,14 @@ async fn mark_dispatch_failure(state: &AppState, task_id: Uuid, message: &str) -
     .bind(&from_status)
     .execute(&mut *tx)
     .await?;
-    sqlx::query(
-        "UPDATE conversation_messages SET status = 'failed', content = '任务队列暂不可用', updated_at = NOW() WHERE id = $1",
-    )
-    .bind(assistant_message_id)
-    .execute(&mut *tx)
-    .await?;
+    if let Some(assistant_message_id) = assistant_message_id {
+        sqlx::query(
+            "UPDATE conversation_messages SET status = 'failed', content = '任务队列暂不可用', updated_at = NOW() WHERE id = $1",
+        )
+        .bind(assistant_message_id)
+        .execute(&mut *tx)
+        .await?;
+    }
     insert_event(
         &mut tx,
         task_id,
@@ -1974,9 +2125,10 @@ fn build_prompt(
 #[serde(rename_all = "camelCase")]
 struct TaskView {
     id: Uuid,
-    conversation_id: Uuid,
-    user_message_id: Uuid,
-    assistant_message_id: Uuid,
+    conversation_id: Option<Uuid>,
+    user_message_id: Option<Uuid>,
+    assistant_message_id: Option<Uuid>,
+    edit_document_id: Option<Uuid>,
     model_id: Uuid,
     provider_id: Uuid,
     operation: String,
@@ -2000,7 +2152,8 @@ async fn get_task(
     current.require_password_changed()?;
     let mut task = sqlx::query_as::<_, TaskView>(
         r#"
-        SELECT id, conversation_id, user_message_id, assistant_message_id, model_id,
+        SELECT id, conversation_id, user_message_id, assistant_message_id,
+               edit_document_id, model_id,
                provider_id, operation, status, request_params, error_code, error_message,
                retry_count, started_at, finished_at, created_at
         FROM image_tasks WHERE id = $1 AND user_id = $2
@@ -2195,7 +2348,7 @@ async fn cancel(
 ) -> AppResult<StatusCode> {
     current.require_password_changed()?;
     let mut tx = state.db.begin().await?;
-    let assistant_message_id = sqlx::query_scalar::<_, Uuid>(
+    let task = sqlx::query_as::<_, (Option<Uuid>,)>(
         r#"
         UPDATE image_tasks
         SET status = 'cancelled', finished_at = NOW(), updated_at = NOW()
@@ -2207,21 +2360,23 @@ async fn cancel(
     .bind(current.id)
     .fetch_optional(&mut *tx)
     .await?;
-    let Some(assistant_message_id) = assistant_message_id else {
+    let Some((assistant_message_id,)) = task else {
         return Err(AppError::Conflict(
             "task cannot be cancelled in its current state".to_owned(),
         ));
     };
-    sqlx::query(
-        r#"
-        UPDATE conversation_messages
-        SET status = 'cancelled', content = '生成已取消', updated_at = NOW()
-        WHERE id = $1
-        "#,
-    )
-    .bind(assistant_message_id)
-    .execute(&mut *tx)
-    .await?;
+    if let Some(assistant_message_id) = assistant_message_id {
+        sqlx::query(
+            r#"
+            UPDATE conversation_messages
+            SET status = 'cancelled', content = '生成已取消', updated_at = NOW()
+            WHERE id = $1
+            "#,
+        )
+        .bind(assistant_message_id)
+        .execute(&mut *tx)
+        .await?;
+    }
     insert_event(
         &mut tx,
         task_id,
@@ -2509,7 +2664,8 @@ mod tests {
         let mut task = ProcessingTask {
             id: Uuid::new_v4(),
             user_id: Uuid::new_v4(),
-            assistant_message_id: Uuid::new_v4(),
+            assistant_message_id: Some(Uuid::new_v4()),
+            edit_document_id: None,
             provider_id: Uuid::new_v4(),
             model_id: Uuid::new_v4(),
             provider_type: "openai-compatible".to_owned(),
@@ -2534,7 +2690,8 @@ mod tests {
         let task = ProcessingTask {
             id: Uuid::new_v4(),
             user_id: Uuid::new_v4(),
-            assistant_message_id: Uuid::new_v4(),
+            assistant_message_id: Some(Uuid::new_v4()),
+            edit_document_id: None,
             provider_id: Uuid::new_v4(),
             model_id: Uuid::new_v4(),
             provider_type: "openai-compatible".to_owned(),

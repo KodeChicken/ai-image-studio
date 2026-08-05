@@ -870,7 +870,16 @@ fn catalog_for(provider_type: &str, model_id: &str) -> CatalogEntry {
                 "max_images_per_request": 1,
                 "output_formats": ["png", "jpeg", "webp"],
                 "native_streaming": false,
-                "native_multi_turn": true
+                "native_multi_turn": true,
+                "image_edit_capability": {
+                    "supportsImageEdit": true,
+                    "supportsMask": false,
+                    "supportsOutpaint": false,
+                    "supportedInputMimeTypes": ["image/png", "image/jpeg", "image/webp"],
+                    "supportedOutputSizes": ["auto", "1k", "2k", "4k"],
+                    "maxInputImages": 1,
+                    "maxDimension": 4096
+                }
             }),
             parameters: json!({
                 "meta": { "source": "official_catalog", "modelFamily": "gemini-image", "schemaVersion": "1" },
@@ -895,7 +904,16 @@ fn catalog_for(provider_type: &str, model_id: &str) -> CatalogEntry {
                 "max_images_per_request": 10,
                 "output_formats": ["png", "jpeg"],
                 "native_streaming": false,
-                "native_multi_turn": false
+                "native_multi_turn": false,
+                "image_edit_capability": {
+                    "supportsImageEdit": true,
+                    "supportsMask": false,
+                    "supportsOutpaint": false,
+                    "supportedInputMimeTypes": ["image/png", "image/jpeg"],
+                    "supportedOutputSizes": ["auto"],
+                    "maxInputImages": 10,
+                    "maxDimension": null
+                }
             }),
             parameters: json!({
                 "meta": { "source": "official_catalog", "modelFamily": "grok-image", "schemaVersion": "1" },
@@ -938,7 +956,7 @@ fn catalog_for(provider_type: &str, model_id: &str) -> CatalogEntry {
                 "image_edit": true,
                 "reference_image": true,
                 "multiple_reference_images": true,
-                "sizes": sizes,
+                "sizes": sizes.clone(),
                 "aspect_ratios": aspect_ratios,
                 "max_images_per_request": 10,
                 "output_formats": ["png", "jpeg", "webp"],
@@ -946,7 +964,16 @@ fn catalog_for(provider_type: &str, model_id: &str) -> CatalogEntry {
                 "supports_transparent_background": !is_gpt_image_2,
                 "native_streaming": true,
                 "max_partial_images": 3,
-                "native_multi_turn": false
+                "native_multi_turn": false,
+                "image_edit_capability": {
+                    "supportsImageEdit": true,
+                    "supportsMask": true,
+                    "supportsOutpaint": true,
+                    "supportedInputMimeTypes": ["image/png", "image/jpeg", "image/webp"],
+                    "supportedOutputSizes": if is_gpt_image_2 { json!("custom") } else { sizes },
+                    "maxInputImages": 10,
+                    "maxDimension": if is_gpt_image_2 { 3840 } else { 1536 }
+                }
             }),
             parameters: gpt_image_parameters(is_gpt_image_2),
         };
@@ -966,7 +993,16 @@ fn catalog_for(provider_type: &str, model_id: &str) -> CatalogEntry {
                 "supports_transparent_background": false,
                 "native_streaming": false,
                 "max_partial_images": 0,
-                "native_multi_turn": false
+                "native_multi_turn": false,
+                "image_edit_capability": {
+                    "supportsImageEdit": false,
+                    "supportsMask": false,
+                    "supportsOutpaint": false,
+                    "supportedInputMimeTypes": [],
+                    "supportedOutputSizes": ["auto", "1024x1024", "1792x1024", "1024x1792"],
+                    "maxInputImages": 0,
+                    "maxDimension": 1792
+                }
             }),
             parameters: json!({
                 "meta": { "source": "official_catalog", "modelFamily": "dall-e", "schemaVersion": "1" },
@@ -997,7 +1033,16 @@ fn catalog_for(provider_type: &str, model_id: &str) -> CatalogEntry {
                 "supports_transparent_background": false,
                 "native_streaming": false,
                 "max_partial_images": 0,
-                "native_multi_turn": false
+                "native_multi_turn": false,
+                "image_edit_capability": {
+                    "supportsImageEdit": true,
+                    "supportsMask": true,
+                    "supportsOutpaint": true,
+                    "supportedInputMimeTypes": ["image/png"],
+                    "supportedOutputSizes": ["auto", "256x256", "512x512", "1024x1024"],
+                    "maxInputImages": 1,
+                    "maxDimension": 1024
+                }
             }),
             parameters: json!({
                 "meta": { "source": "official_catalog", "modelFamily": "dall-e-2", "schemaVersion": "2026-07-21" },
@@ -1116,6 +1161,10 @@ mod tests {
         assert_eq!(entry.parameters["parameters"]["size"]["default"], "auto");
         assert_eq!(entry.capabilities["max_partial_images"], 3);
         assert_eq!(entry.parameters["parameters"]["partial_images"]["max"], 3);
+        assert_eq!(
+            entry.capabilities["image_edit_capability"]["supportsOutpaint"],
+            true
+        );
     }
 
     #[test]

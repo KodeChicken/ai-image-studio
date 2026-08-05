@@ -158,6 +158,7 @@ pub fn build_router(state: AppState) -> Router {
         .merge(crate::conversations::routes())
         .merge(crate::tasks::routes())
         .merge(crate::images::routes())
+        .merge(crate::image_editor::routes())
         .merge(crate::history::routes())
         .merge(crate::prompt_templates::routes())
         .merge(crate::admin::routes())

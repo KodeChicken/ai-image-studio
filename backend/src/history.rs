@@ -37,14 +37,15 @@ struct HistoryQuery {
 #[derive(Serialize, FromRow)]
 #[serde(rename_all = "camelCase")]
 struct HistoryItem {
-    task_id: Uuid,
-    conversation_id: Uuid,
+    task_id: Option<Uuid>,
+    conversation_id: Option<Uuid>,
     conversation_title: String,
     asset_id: Uuid,
+    edit_document_id: Option<Uuid>,
     content_url: String,
-    model_id: Uuid,
+    model_id: Option<Uuid>,
     model_name: String,
-    provider_id: Uuid,
+    provider_id: Option<Uuid>,
     provider_name: String,
     prompt: String,
     mime_type: String,
@@ -64,26 +65,63 @@ async fn list(
     let limit = query.limit.clamp(1, 100);
     let mut items = sqlx::query_as::<_, HistoryItem>(
         r#"
-        SELECT t.id AS task_id, t.conversation_id, c.title AS conversation_title,
-               a.id AS asset_id, ''::TEXT AS content_url,
-               t.model_id, m.display_name AS model_name,
-               t.provider_id, p.display_name AS provider_name,
-               t.prompt, a.mime_type, a.width, a.height, a.file_size_bytes, r.created_at
-        FROM image_results r
-        JOIN image_tasks t ON t.id = r.task_id
-        JOIN image_assets a ON a.id = r.asset_id
-        JOIN conversations c ON c.id = t.conversation_id
-        JOIN models m ON m.id = t.model_id
-        JOIN providers p ON p.id = t.provider_id
-        WHERE t.user_id = $1 AND t.status = 'succeeded'
-          AND ($2::UUID IS NULL OR t.conversation_id = $2)
-          AND ($3::UUID IS NULL OR t.provider_id = $3)
-          AND ($4::UUID IS NULL OR t.model_id = $4)
-          AND ($5::TIMESTAMPTZ IS NULL OR r.created_at >= $5)
-          AND ($6::TIMESTAMPTZ IS NULL OR r.created_at < $6)
-          AND ($7::INTEGER IS NULL OR a.width = $7)
-          AND ($8::INTEGER IS NULL OR a.height = $8)
-        ORDER BY r.created_at DESC
+        WITH history_items AS (
+            SELECT t.id AS task_id, t.conversation_id,
+                   c.title AS conversation_title, a.id AS asset_id, a.edit_document_id,
+                   t.model_id, m.display_name AS model_name,
+                   t.provider_id, p.display_name AS provider_name,
+                   t.prompt, a.mime_type, a.width, a.height,
+                   a.file_size_bytes, r.created_at
+            FROM image_results r
+            JOIN image_tasks t ON t.id = r.task_id
+            JOIN image_assets a ON a.id = r.asset_id
+            JOIN conversations c ON c.id = t.conversation_id
+            JOIN models m ON m.id = t.model_id
+            JOIN providers p ON p.id = t.provider_id
+            WHERE t.user_id = $1 AND t.status = 'succeeded'
+
+            UNION ALL
+
+            SELECT t.id AS task_id, NULL::UUID AS conversation_id,
+                   d.title AS conversation_title, a.id AS asset_id, a.edit_document_id,
+                   t.model_id, m.display_name AS model_name,
+                   t.provider_id, p.display_name AS provider_name,
+                   t.prompt, a.mime_type, a.width, a.height,
+                   a.file_size_bytes, r.created_at
+            FROM image_results r
+            JOIN image_tasks t ON t.id = r.task_id
+            JOIN image_assets a ON a.id = r.asset_id
+            JOIN image_edit_documents d ON d.id = t.edit_document_id
+            JOIN models m ON m.id = t.model_id
+            JOIN providers p ON p.id = t.provider_id
+            WHERE t.user_id = $1 AND t.status = 'succeeded'
+
+            UNION ALL
+
+            SELECT NULL::UUID AS task_id, NULL::UUID AS conversation_id,
+                   d.title AS conversation_title, a.id AS asset_id, a.edit_document_id,
+                   NULL::UUID AS model_id, '图片编辑器'::TEXT AS model_name,
+                   NULL::UUID AS provider_id, '确定性导出'::TEXT AS provider_name,
+                   '编辑器高清导出'::TEXT AS prompt, a.mime_type, a.width, a.height,
+                   a.file_size_bytes, a.created_at
+            FROM image_assets a
+            JOIN image_edit_documents d ON d.id = a.edit_document_id
+            WHERE a.owner_id = $1 AND a.asset_origin = 'edited'
+              AND NOT EXISTS (SELECT 1 FROM image_results r WHERE r.asset_id = a.id)
+        )
+        SELECT task_id, conversation_id, conversation_title,
+               asset_id, edit_document_id, ''::TEXT AS content_url, model_id, model_name,
+               provider_id, provider_name, prompt, mime_type, width, height,
+               file_size_bytes, created_at
+        FROM history_items
+        WHERE ($2::UUID IS NULL OR conversation_id = $2)
+          AND ($3::UUID IS NULL OR provider_id = $3)
+          AND ($4::UUID IS NULL OR model_id = $4)
+          AND ($5::TIMESTAMPTZ IS NULL OR created_at >= $5)
+          AND ($6::TIMESTAMPTZ IS NULL OR created_at < $6)
+          AND ($7::INTEGER IS NULL OR width = $7)
+          AND ($8::INTEGER IS NULL OR height = $8)
+        ORDER BY created_at DESC
         LIMIT $9
         "#,
     )
@@ -130,9 +168,9 @@ fn validate_history_query(query: &HistoryQuery) -> AppResult<()> {
 
 #[derive(FromRow)]
 struct TaskMessages {
-    conversation_id: Uuid,
-    user_message_id: Uuid,
-    assistant_message_id: Uuid,
+    conversation_id: Option<Uuid>,
+    user_message_id: Option<Uuid>,
+    assistant_message_id: Option<Uuid>,
 }
 
 async fn remove(
@@ -155,7 +193,10 @@ async fn remove(
     .fetch_optional(&mut *tx)
     .await?
     .ok_or(AppError::NotFound)?;
-    let message_ids = [task.user_message_id, task.assistant_message_id];
+    let message_ids = [task.user_message_id, task.assistant_message_id]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
     let candidate_assets = sqlx::query_scalar::<_, Uuid>(
         r#"
         SELECT asset_id FROM task_input_images WHERE task_id = $1
@@ -166,7 +207,7 @@ async fn remove(
         "#,
     )
     .bind(task_id)
-    .bind(&message_ids[..])
+    .bind(&message_ids)
     .fetch_all(&mut *tx)
     .await?;
     sqlx::query("DELETE FROM image_tasks WHERE id = $1 AND user_id = $2")
@@ -174,26 +215,30 @@ async fn remove(
         .bind(current.id)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("DELETE FROM conversation_messages WHERE conversation_id = $1 AND id = ANY($2)")
-        .bind(task.conversation_id)
-        .bind(&message_ids[..])
+    if let Some(conversation_id) = task.conversation_id {
+        sqlx::query(
+            "DELETE FROM conversation_messages WHERE conversation_id = $1 AND id = ANY($2)",
+        )
+        .bind(conversation_id)
+        .bind(&message_ids)
         .execute(&mut *tx)
         .await?;
-    sqlx::query(
-        r#"
-        UPDATE conversations c
-        SET last_message_at = COALESCE(
-                (SELECT MAX(cm.created_at) FROM conversation_messages cm WHERE cm.conversation_id = c.id),
-                c.created_at
-            ),
-            updated_at = NOW()
-        WHERE c.id = $1 AND c.user_id = $2
-        "#,
-    )
-    .bind(task.conversation_id)
-    .bind(current.id)
-    .execute(&mut *tx)
-    .await?;
+        sqlx::query(
+            r#"
+            UPDATE conversations c
+            SET last_message_at = COALESCE(
+                    (SELECT MAX(cm.created_at) FROM conversation_messages cm WHERE cm.conversation_id = c.id),
+                    c.created_at
+                ),
+                updated_at = NOW()
+            WHERE c.id = $1 AND c.user_id = $2
+            "#,
+        )
+        .bind(conversation_id)
+        .bind(current.id)
+        .execute(&mut *tx)
+        .await?;
+    }
     let storage_deletes =
         crate::images::delete_unreferenced_assets(&mut tx, current.id, &candidate_assets).await?;
     tx.commit().await?;

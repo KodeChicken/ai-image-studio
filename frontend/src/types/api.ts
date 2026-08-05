@@ -66,6 +66,16 @@ export interface ImageModel {
   enabled: boolean
 }
 
+export interface ImageEditCapability {
+  supportsImageEdit: boolean
+  supportsMask: boolean
+  supportsOutpaint: boolean
+  supportedInputMimeTypes: string[]
+  supportedOutputSizes: string[] | 'custom' | 'auto'
+  maxInputImages: number
+  maxDimension: number | null
+}
+
 export interface ImageAsset {
   id: string
   contentUrl: string

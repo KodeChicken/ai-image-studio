@@ -6,6 +6,8 @@
 
 ### 新增
 
+- 基于 Konva 的全屏非破坏性图片编辑器，支持原图像素裁剪、独立成品尺寸、Cover/Contain/Free/Stretch、变换、背景、撤销重做和刷新恢复。
+- 编辑文档与派生 Asset 数据模型、PNG/JPEG/WebP 高清确定性导出，以及显式模型能力门控的 AI 扩图任务上下文。
 - OpenAI 图片原生 SSE、模型级动态参数及 GPT Image 2 自定义尺寸校验。
 - Local/S3 混合图片资产读取、存储一致性扫描和 Host Updater 演练。
 - 会话当前分支浏览、从历史消息继续、重新生成和同级分支切换。
@@ -18,6 +20,7 @@
 
 ### 修复
 
+- 创作台和历史作品统一进入“编辑成品”，宽高默认不联动，4K 原图可精确保留 `261px` 等用户输入值且不受预览尺寸影响。
 - Release Manifest 同时兼容 snake_case 发布契约与 Web camelCase 响应，并支持通过 `HTTP_CA_CERT_FILE` 信任内部 HTTPS 根 CA。
 - Release Manifest 检查安全跟随受限的 HTTPS 重定向，兼容 GitHub Release 下载地址且不向跨域目标转发 Token。
 - Host Updater 正确解析执行器的 camelCase 进度消息，执行升级时不再收紧既有图片挂载目录权限。

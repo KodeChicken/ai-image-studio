@@ -15,7 +15,7 @@ async fn upgrades_three_predecessor_schemas_without_losing_business_rows() -> an
         .max_connections(1)
         .connect(&base_url)
         .await?;
-    for predecessor in [11_i64, 12, 13] {
+    for predecessor in [12_i64, 13, 14] {
         exercise_upgrade(&admin, &base_url, predecessor).await?;
     }
     Ok(())
@@ -126,6 +126,27 @@ async fn run_upgrade_case(
     .fetch_one(&pool)
     .await?;
     anyhow::ensure!(templates_without_scenarios == 0);
+    let editor_table = sqlx::query_scalar::<_, bool>(
+        "SELECT to_regclass('public.image_edit_documents') IS NOT NULL",
+    )
+    .fetch_one(&pool)
+    .await?;
+    anyhow::ensure!(editor_table, "image editor document table is missing");
+    let editor_task_context = sqlx::query_scalar::<_, bool>(
+        r#"
+        SELECT EXISTS(
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'image_tasks'
+              AND column_name = 'edit_document_id' AND is_nullable = 'YES'
+        )
+        "#,
+    )
+    .fetch_one(&pool)
+    .await?;
+    anyhow::ensure!(
+        editor_task_context,
+        "editor task context migration is missing"
+    );
     let digital_internet_template = sqlx::query_scalar::<_, String>(
         "SELECT prompt FROM prompt_templates WHERE id = '10000000-0000-4000-8000-000000000004'",
     )

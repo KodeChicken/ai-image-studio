@@ -95,7 +95,7 @@ async fn upload(
         )));
     }
     let validated = validate_image(bytes)?;
-    let asset = persist_asset(&state, current.id, original_filename, validated).await?;
+    let asset = persist_uploaded_asset(&state, current.id, original_filename, validated).await?;
     Ok((StatusCode::CREATED, Json(asset)))
 }
 
@@ -193,6 +193,8 @@ pub(crate) async fn delete_unreferenced_assets(
           AND NOT EXISTS (SELECT 1 FROM message_image_assets ma WHERE ma.asset_id = a.id)
           AND NOT EXISTS (SELECT 1 FROM task_input_images ti WHERE ti.asset_id = a.id)
           AND NOT EXISTS (SELECT 1 FROM image_results ir WHERE ir.asset_id = a.id)
+          AND NOT EXISTS (SELECT 1 FROM image_edit_documents d WHERE d.source_asset_id = a.id)
+          AND NOT EXISTS (SELECT 1 FROM image_assets child WHERE child.parent_asset_id = a.id)
         RETURNING a.id, a.storage_driver, a.storage_container, a.storage_key
         "#,
     )
@@ -231,6 +233,67 @@ pub(crate) async fn persist_asset(
     original_filename: Option<String>,
     image: ValidatedImage,
 ) -> AppResult<ImageAssetSummary> {
+    persist_asset_with_origin(
+        state,
+        owner_id,
+        original_filename,
+        image,
+        None,
+        None,
+        "generated",
+    )
+    .await
+}
+
+async fn persist_uploaded_asset(
+    state: &AppState,
+    owner_id: Uuid,
+    original_filename: Option<String>,
+    image: ValidatedImage,
+) -> AppResult<ImageAssetSummary> {
+    persist_asset_with_origin(
+        state,
+        owner_id,
+        original_filename,
+        image,
+        None,
+        None,
+        "uploaded",
+    )
+    .await
+}
+
+pub(crate) async fn persist_derived_asset(
+    state: &AppState,
+    owner_id: Uuid,
+    original_filename: Option<String>,
+    image: ValidatedImage,
+    parent_asset_id: Uuid,
+    edit_document_id: Uuid,
+    origin: &'static str,
+) -> AppResult<ImageAssetSummary> {
+    debug_assert!(matches!(origin, "edited" | "ai_edited"));
+    persist_asset_with_origin(
+        state,
+        owner_id,
+        original_filename,
+        image,
+        Some(parent_asset_id),
+        Some(edit_document_id),
+        origin,
+    )
+    .await
+}
+
+async fn persist_asset_with_origin(
+    state: &AppState,
+    owner_id: Uuid,
+    original_filename: Option<String>,
+    image: ValidatedImage,
+    parent_asset_id: Option<Uuid>,
+    edit_document_id: Option<Uuid>,
+    origin: &'static str,
+) -> AppResult<ImageAssetSummary> {
     let now = Utc::now();
     let asset_id = Uuid::new_v4();
     let storage_key = format!(
@@ -249,9 +312,10 @@ pub(crate) async fn persist_asset(
         r#"
         INSERT INTO image_assets (
             id, owner_id, storage_driver, storage_container, storage_key,
-            original_filename, mime_type, width, height, file_size_bytes, sha256
+            original_filename, mime_type, width, height, file_size_bytes, sha256,
+            parent_asset_id, edit_document_id, asset_origin
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
         "#,
     )
     .bind(asset_id)
@@ -265,6 +329,9 @@ pub(crate) async fn persist_asset(
     .bind(image.height)
     .bind(image.bytes.len() as i64)
     .bind(image.sha256)
+    .bind(parent_asset_id)
+    .bind(edit_document_id)
+    .bind(origin)
     .execute(&state.db)
     .await;
     if let Err(error) = insert {

@@ -6,6 +6,7 @@ const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/login', name: 'login', component: () => import('@/views/LoginView.vue') },
+    { path: '/editor/:assetId', name: 'image-editor', component: () => import('@/features/image-editor/ImageEditorView.vue') },
     {
       path: '/',
       component: DefaultLayout,

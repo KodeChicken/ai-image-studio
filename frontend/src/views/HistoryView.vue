@@ -1,19 +1,21 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import { RouterLink } from 'vue-router'
 import { NButton, NInputNumber, NSelect, useMessage } from 'naive-ui'
 import { api } from '@/api/client'
-import ImageCropModal, { type CropPreviewImage } from '@/components/ImageCropModal.vue'
+import ImagePreviewModal, { type PreviewImage } from '@/components/ImagePreviewModal.vue'
 import type { Conversation, ImageModel, Provider } from '@/types/api'
 
 interface HistoryItem {
-  taskId: string
-  conversationId: string
+  taskId: string | null
+  conversationId: string | null
   conversationTitle: string
   assetId: string
+  editDocumentId: string | null
   contentUrl: string
-  modelId: string
+  modelId: string | null
   modelName: string
-  providerId: string
+  providerId: string | null
   providerName: string
   prompt: string
   mimeType: string
@@ -37,8 +39,7 @@ const height = ref<number | null>(null)
 const loading = ref(false)
 const message = useMessage()
 const imagePreviewOpen = ref(false)
-const imagePreview = ref<CropPreviewImage | null>(null)
-const imagePreviewMode = ref<'preview' | 'crop'>('preview')
+const imagePreview = ref<PreviewImage | null>(null)
 const modelOptions = computed(() =>
   models.value
     .filter((item) => !providerId.value || item.providerId === providerId.value)
@@ -103,7 +104,7 @@ function dateBoundary(value: string, nextDay: boolean) {
   return date.toISOString()
 }
 
-function openImagePreview(item: HistoryItem, mode: 'preview' | 'crop' = 'preview') {
+function openImagePreview(item: HistoryItem) {
   imagePreview.value = {
     id: item.assetId,
     contentUrl: item.contentUrl,
@@ -113,7 +114,6 @@ function openImagePreview(item: HistoryItem, mode: 'preview' | 'crop' = 'preview
     width: item.width,
     height: item.height,
   }
-  imagePreviewMode.value = mode
   imagePreviewOpen.value = true
 }
 
@@ -148,7 +148,10 @@ function imageDownloadName(item: HistoryItem) {
           <footer class="history-copy-footer">
             <small>{{ item.providerName }} · {{ item.modelName }} · {{ item.width }}×{{ item.height }}</small>
             <span class="image-asset-actions">
-              <button type="button" class="image-edit-button" @click="openImagePreview(item, 'crop')">裁剪缩放</button>
+              <RouterLink
+                class="image-edit-button"
+                :to="{ path: `/editor/${item.assetId}`, query: item.editDocumentId ? { documentId: item.editDocumentId } : {} }"
+              >{{ item.editDocumentId ? '继续编辑' : '编辑成品' }}</RouterLink>
               <a class="image-download-button" :href="item.contentUrl" :download="imageDownloadName(item)">↓ 下载原图</a>
             </span>
           </footer>
@@ -158,9 +161,8 @@ function imageDownloadName(item: HistoryItem) {
     <div v-else class="large-empty panel"><span>▦</span><h2>还没有历史作品</h2><p>完成的生图会自动出现在这里。</p></div>
   </div>
 
-  <image-crop-modal
+  <image-preview-modal
     v-model:show="imagePreviewOpen"
     :image="imagePreview"
-    :initial-mode="imagePreviewMode"
   />
 </template>

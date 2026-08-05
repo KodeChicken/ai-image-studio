@@ -240,6 +240,18 @@ async function mockApi(
   let messageSequence = 0
   let eventStreamDisconnected = false
   let createdConversation: typeof conversation | null = null
+  let editorSourceAssetId = '73000000-0000-4000-8000-000000000099'
+  let editorVersion = 1
+  let editorDocument = {
+    schemaVersion: 1 as const,
+    canvas: { width: 1024, height: 1024, background: { type: 'transparent' as const } },
+    layout: { fitStrategy: 'cover', anchor: 'center' },
+    image: {
+      assetId: '73000000-0000-4000-8000-000000000099',
+      x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0, flipX: false, flipY: false,
+      crop: { x: 0, y: 0, width: 1024, height: 1024 },
+    },
+  }
   const messages: Array<Record<string, unknown>> = []
   const taskAssistantIds = new Map<string, string>()
   const cancelledTaskIds = new Set<string>()
@@ -592,6 +604,7 @@ async function mockApi(
         conversationId: conversation.id,
         conversationTitle: conversation.title,
         assetId: '73000000-0000-4000-8000-000000000099',
+        editDocumentId: null,
         contentUrl: '/mock/generated.png',
         modelId: model.id,
         modelName: model.displayName,
@@ -604,6 +617,25 @@ async function mockApi(
         fileSizeBytes: 1024,
         createdAt: '2026-07-21T10:00:00Z',
       }])
+    }
+    if (path === '/api/v1/image-edit-documents' && method === 'POST') {
+      const input = request.postDataJSON() as { sourceAssetId: string }
+      editorSourceAssetId = input.sourceAssetId
+      editorVersion = 1
+      editorDocument = {
+        ...editorDocument,
+        image: { ...editorDocument.image, assetId: input.sourceAssetId },
+      }
+      return fulfill(editorView(), 201)
+    }
+    if (path === '/api/v1/image-edit-documents/81000000-0000-4000-8000-000000000001' && method === 'GET') {
+      return fulfill(editorView())
+    }
+    if (path === '/api/v1/image-edit-documents/81000000-0000-4000-8000-000000000001' && method === 'PUT') {
+      const input = request.postDataJSON() as { document: typeof editorDocument }
+      editorDocument = structuredClone(input.document)
+      editorVersion += 1
+      return fulfill(editorView())
     }
     if (path === '/api/v1/usage' && method === 'GET') {
       const beforeId = Number(url.searchParams.get('beforeId') || Number.MAX_SAFE_INTEGER)
@@ -670,6 +702,29 @@ async function mockApi(
     }
     return fulfill({ error: { code: 'NOT_FOUND', message: `unmocked ${method} ${path}` } }, 404)
   })
+
+  function editorView() {
+    const asset = {
+      id: editorDocument.image.assetId,
+      contentUrl: '/mock/generated.png',
+      mimeType: 'image/png',
+      width: 1024,
+      height: 1024,
+      fileSizeBytes: 1024,
+    }
+    return {
+      id: '81000000-0000-4000-8000-000000000001',
+      sourceAssetId: editorSourceAssetId,
+      title: '图片成品',
+      schemaVersion: 1,
+      version: editorVersion,
+      document: editorDocument,
+      sourceAsset: asset,
+      imageAsset: asset,
+      createdAt: '2026-08-05T00:00:00Z',
+      updatedAt: '2026-08-05T00:00:00Z',
+    }
+  }
   return state
 }
 
@@ -878,8 +933,8 @@ test('messages show timestamps and live generation elapsed time', async ({ page 
   expect(generatedImageBox!.height).toBeGreaterThan(generatedImageBox!.width)
   expect(generatedImageBox!.height).toBeLessThanOrEqual(560)
   expect(generatedImageBox!.width).toBeLessThanOrEqual(520)
-  const directCropButton = page.locator('.message-row.assistant .image-edit-button').first()
-  await expect(directCropButton).toBeVisible()
+  const directEditorLink = page.locator('.message-row.assistant .image-edit-button').first()
+  await expect(directEditorLink).toBeVisible()
 
   await generatedImageButton.click()
   const imageDialog = page.getByRole('dialog', { name: /生成图片/ })
@@ -887,118 +942,26 @@ test('messages show timestamps and live generation elapsed time', async ({ page 
   await expect(imageDialog.getByRole('button', { name: '关闭图片预览' })).toBeVisible()
   await expect.poll(async () => (await imageDialog.locator('img').boundingBox())?.height ?? 0)
     .toBeGreaterThan(generatedImageBox!.height)
-  await imageDialog.getByRole('button', { name: '裁剪缩放' }).click()
-  await expect(imageDialog.getByText('裁剪与缩放', { exact: true })).toBeVisible()
-  const cropperContainer = imageDialog.locator('.cropper-container')
-  const cropperCanvas = imageDialog.locator('.cropper-canvas')
-  const cropBox = imageDialog.locator('.cropper-crop-box')
-  await expect(cropperContainer).toBeVisible()
-  await expect(cropBox).toHaveAttribute('data-crop-dimensions', /^\d+ × \d+ px$/)
-  await expect(imageDialog.locator('.image-crop-zoom')).toHaveCount(0)
-  await expect(imageDialog.locator('.n-input-number')).toHaveCount(0)
+  await imageDialog.getByRole('link', { name: '编辑成品' }).click()
+  await expect(page).toHaveURL(/\/editor\/73000000-0000-4000-8000-000000000001\?documentId=81000000/)
+  const outputSize = page.locator('.dimension-fields input')
+  await outputSize.nth(0).fill('960')
+  await expect(outputSize.nth(1)).toHaveValue('1024')
+  await outputSize.nth(1).fill('128')
+  await expect(outputSize.nth(0)).toHaveValue('960')
+  await expect(outputSize.nth(1)).toHaveValue('128')
+  await page.getByText('裁剪', { exact: true }).click()
+  const originalPixelCrop = page.locator('.four-fields input')
+  await originalPixelCrop.nth(3).fill('261')
+  await expect(originalPixelCrop.nth(3)).toHaveValue('261')
+  await page.getByRole('button', { name: '保存', exact: true }).click()
+  await expect(page.getByText('已保存', { exact: true })).toBeVisible()
+  await page.goBack()
+  await expect(page).toHaveURL(/\/studio$/)
 
-  const canvasBeforeZoomOut = await cropperCanvas.boundingBox()
-  expect(canvasBeforeZoomOut).not.toBeNull()
-  await cropperContainer.hover()
-  await page.mouse.wheel(0, 120)
-  await expect.poll(async () => (await cropperCanvas.boundingBox())?.width ?? 0)
-    .toBeLessThan(canvasBeforeZoomOut!.width)
-
-  const cropBoxBeforeResize = await cropBox.boundingBox()
-  const displayedSizeBeforeResize = await cropBox.evaluate((element) => {
-    const [width, height] = element.getAttribute('data-crop-dimensions')?.match(/\d+/g)?.map(Number) ?? []
-    return { width, height }
-  })
-  const resizeHandle = imageDialog.locator('.cropper-point.point-e')
-  const resizeHandleBox = await resizeHandle.boundingBox()
-  expect(cropBoxBeforeResize).not.toBeNull()
-  expect(resizeHandleBox).not.toBeNull()
-  await expect(resizeHandle).toHaveAttribute('data-cropper-action', 'e')
-  await page.mouse.move(resizeHandleBox!.x + resizeHandleBox!.width / 2, resizeHandleBox!.y + resizeHandleBox!.height / 2)
-  await page.mouse.down()
-  await page.mouse.move(resizeHandleBox!.x + resizeHandleBox!.width / 2 - 40, resizeHandleBox!.y + resizeHandleBox!.height / 2)
-  await page.mouse.up()
-  await expect.poll(async () => {
-    const resized = await cropBox.boundingBox()
-    return resized ? {
-      narrower: resized.width < cropBoxBeforeResize!.width,
-      heightDifference: Math.abs(resized.height - cropBoxBeforeResize!.height),
-    } : null
-  }).toEqual({ narrower: true, heightDifference: 0 })
-  const displayedSizeAfterWidthResize = await cropBox.evaluate((element) => {
-    const [width, height] = element.getAttribute('data-crop-dimensions')?.match(/\d+/g)?.map(Number) ?? []
-    return { width, height }
-  })
-  expect(displayedSizeAfterWidthResize.width).toBeLessThan(displayedSizeBeforeResize.width)
-  expect(displayedSizeAfterWidthResize.height).toBe(displayedSizeBeforeResize.height)
-
-  const cropBoxBeforeHeightResize = await cropBox.boundingBox()
-  const heightResizeHandle = imageDialog.locator('.cropper-point.point-n')
-  const heightResizeHandleBox = await heightResizeHandle.boundingBox()
-  expect(cropBoxBeforeHeightResize).not.toBeNull()
-  expect(heightResizeHandleBox).not.toBeNull()
-  await page.mouse.move(heightResizeHandleBox!.x + heightResizeHandleBox!.width / 2, heightResizeHandleBox!.y + heightResizeHandleBox!.height / 2)
-  await page.mouse.down()
-  await page.mouse.move(heightResizeHandleBox!.x + heightResizeHandleBox!.width / 2, heightResizeHandleBox!.y + heightResizeHandleBox!.height / 2 + 30)
-  await page.mouse.up()
-  await expect.poll(async () => {
-    const resized = await cropBox.boundingBox()
-    return resized ? {
-      widthDifference: Math.abs(resized.width - cropBoxBeforeHeightResize!.width),
-      shorter: resized.height < cropBoxBeforeHeightResize!.height,
-    } : null
-  }).toEqual({ widthDifference: 0, shorter: true })
-  const displayedSizeAfterHeightResize = await cropBox.evaluate((element) => {
-    const [width, height] = element.getAttribute('data-crop-dimensions')?.match(/\d+/g)?.map(Number) ?? []
-    return { width, height }
-  })
-  expect(displayedSizeAfterHeightResize.width).toBe(displayedSizeAfterWidthResize.width)
-  expect(displayedSizeAfterHeightResize.height).toBeLessThan(displayedSizeAfterWidthResize.height)
-
-  const outputWidth = imageDialog.getByLabel('输出宽度')
-  const outputHeight = imageDialog.getByLabel('输出高度')
-  await outputWidth.click()
-  await expect.poll(() => outputWidth.evaluate((input) => ({
-    start: (input as HTMLInputElement).selectionStart,
-    end: (input as HTMLInputElement).selectionEnd,
-    length: (input as HTMLInputElement).value.length,
-  }))).toEqual({ start: 0, end: 4, length: 4 })
-  const cropBoxBeforeOutputResize = await cropBox.boundingBox()
-  const outputHeightBeforeWidthChange = await outputHeight.inputValue()
-  expect(cropBoxBeforeOutputResize).not.toBeNull()
-  await outputWidth.fill('960')
-  await expect(outputHeight).toHaveValue(outputHeightBeforeWidthChange)
-  await expect.poll(async () => {
-    const box = await cropBox.boundingBox()
-    return box ? {
-      widthDifference: Math.abs(box.width - cropBoxBeforeOutputResize!.width),
-      heightDifference: Math.abs(box.height - cropBoxBeforeOutputResize!.height),
-    } : null
-  }).toEqual({ widthDifference: 0, heightDifference: 0 })
-  await outputHeight.fill('128')
-  await expect(outputWidth).toHaveValue('960')
-  await expect(outputHeight).toHaveValue('128')
-  await expect.poll(async () => {
-    const box = await cropBox.boundingBox()
-    return box ? {
-      widthDifference: Math.abs(box.width - cropBoxBeforeOutputResize!.width),
-      heightDifference: Math.abs(box.height - cropBoxBeforeOutputResize!.height),
-    } : null
-  }).toEqual({ widthDifference: 0, heightDifference: 0 })
-  const croppedDownloadStarted = page.waitForEvent('download')
-  await imageDialog.getByRole('button', { name: '导出成品' }).click()
-  expect((await croppedDownloadStarted).suggestedFilename()).toBe(
-    'ai-image-studio-73000000-0000-4000-8000-000000000001-960x128.png',
-  )
-  await imageDialog.getByRole('button', { name: '返回预览' }).click()
-  await imageDialog.getByRole('button', { name: '关闭图片预览' }).click()
-  await expect(imageDialog).toHaveCount(0)
-
-  await directCropButton.click()
-  await expect(imageDialog.getByText('裁剪与缩放', { exact: true })).toBeVisible()
-  await expect(imageDialog.locator('.cropper-container')).toBeVisible()
-  await imageDialog.getByRole('button', { name: '关闭图片预览' }).click()
-  await expect(imageDialog).toHaveCount(0)
+  await directEditorLink.click()
+  await expect(page).toHaveURL(/\/editor\/73000000-0000-4000-8000-000000000001/)
+  await page.goBack()
 
   const studioDownload = page.locator('.message-row.assistant .image-download-button').first()
   await expect(studioDownload).toHaveAttribute('download', 'ai-image-studio-73000000-0000-4000-8000-000000000001.png')
@@ -1284,12 +1247,26 @@ test('conversation title search and complete history filters are functional', as
   await historyImageDialog.getByRole('button', { name: '关闭图片预览' }).click()
   await expect(historyImageDialog).toHaveCount(0)
 
-  const historyCrop = historyCard.getByRole('button', { name: '裁剪缩放' })
-  await expect(historyCrop).toBeVisible()
-  await historyCrop.click()
-  await expect(historyImageDialog.getByText('裁剪与缩放', { exact: true })).toBeVisible()
-  await expect(historyImageDialog.locator('.cropper-container')).toBeVisible()
-  await historyImageDialog.getByRole('button', { name: '关闭图片预览' }).click()
+  const historyEditor = historyCard.getByRole('link', { name: '编辑成品' })
+  await expect(historyEditor).toBeVisible()
+  await historyEditor.click()
+  await expect(page).toHaveURL(/\/editor\/73000000-0000-4000-8000-000000000099\?documentId=81000000/)
+  await expect(page.getByText('图片成品', { exact: true })).toBeVisible()
+
+  const canvasSize = page.locator('.dimension-fields input')
+  await canvasSize.nth(0).fill('1920')
+  await expect(canvasSize.nth(1)).toHaveValue('1024')
+  await canvasSize.nth(1).fill('1080')
+  await page.getByText('裁剪', { exact: true }).click()
+  const cropSize = page.locator('.four-fields input')
+  await cropSize.nth(3).fill('261')
+  await expect(cropSize.nth(3)).toHaveValue('261')
+  await page.waitForTimeout(1100)
+  await page.reload()
+  await page.getByText('裁剪', { exact: true }).click()
+  await expect(page.locator('.four-fields input').nth(3)).toHaveValue('261')
+  await page.goto('/history')
+  await expect(historyCard).toBeVisible()
 
   const historyDownload = historyCard.getByRole('link', { name: '↓ 下载原图' })
   await expect(historyDownload).toHaveAttribute('download', 'ai-image-studio-73000000-0000-4000-8000-000000000099.png')

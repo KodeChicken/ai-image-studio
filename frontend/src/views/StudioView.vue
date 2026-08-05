@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { RouterLink } from 'vue-router'
 import { NButton, NInput, NInputNumber, NModal, NSelect, NSwitch, useMessage } from 'naive-ui'
 import { api, streamPost, streamTask } from '@/api/client'
-import ImageCropModal, { type CropPreviewImage } from '@/components/ImageCropModal.vue'
+import ImagePreviewModal, { type PreviewImage } from '@/components/ImagePreviewModal.vue'
 import ImageSizeControl from '@/components/ImageSizeControl.vue'
 import {
   branchPath,
@@ -83,8 +84,7 @@ const templateTitle = ref('')
 const templateApplicableScenarios = ref('')
 const templatePrompt = ref('')
 const imagePreviewOpen = ref(false)
-const imagePreview = ref<CropPreviewImage | null>(null)
-const imagePreviewMode = ref<'preview' | 'crop'>('preview')
+const imagePreview = ref<PreviewImage | null>(null)
 const mobilePanel = ref<'conversations' | 'parameters' | null>(null)
 const parameterPanelWidth = ref(340)
 const viewportWidth = ref(window.innerWidth)
@@ -402,7 +402,7 @@ function removeFile(index: number) {
   if (removed) URL.revokeObjectURL(removed.previewUrl)
 }
 
-function openImagePreview(asset: ImageAsset, label: string, mode: 'preview' | 'crop' = 'preview') {
+function openImagePreview(asset: ImageAsset, label: string) {
   imagePreview.value = {
     id: asset.id,
     contentUrl: asset.contentUrl,
@@ -412,13 +412,11 @@ function openImagePreview(asset: ImageAsset, label: string, mode: 'preview' | 'c
     width: asset.width,
     height: asset.height,
   }
-  imagePreviewMode.value = mode
   imagePreviewOpen.value = true
 }
 
 function openPartialPreview(contentUrl: string, label: string) {
   imagePreview.value = { contentUrl, label, metadata: '最终原图仍在生成' }
-  imagePreviewMode.value = 'preview'
   imagePreviewOpen.value = true
 }
 
@@ -428,7 +426,6 @@ function openPendingAttachmentPreview(attachment: PendingUserMessage['attachment
     label: '参考图',
     metadata: `${attachment.name} · ${attachment.mimeType}`,
   }
-  imagePreviewMode.value = 'preview'
   imagePreviewOpen.value = true
 }
 
@@ -1041,12 +1038,11 @@ async function scrollBottom() {
                 <figcaption class="message-image-meta">
                   <span>{{ asset.width }} × {{ asset.height }} · {{ asset.mimeType }}</span>
                   <span class="image-asset-actions">
-                    <button
+                    <RouterLink
                       v-if="item.role === 'assistant'"
-                      type="button"
                       class="image-edit-button"
-                      @click="openImagePreview(asset, messageImageLabel(item), 'crop')"
-                    >裁剪缩放</button>
+                      :to="`/editor/${asset.id}`"
+                    >编辑成品</RouterLink>
                     <a
                       class="image-download-button"
                       :href="asset.contentUrl"
@@ -1253,9 +1249,8 @@ async function scrollBottom() {
     </div>
   </n-modal>
 
-  <image-crop-modal
+  <image-preview-modal
     v-model:show="imagePreviewOpen"
     :image="imagePreview"
-    :initial-mode="imagePreviewMode"
   />
 </template>
