@@ -372,6 +372,9 @@ fn field_error(error: axum::extract::multipart::MultipartError) -> AppError {
 struct AiExpandRequest {
     provider_id: Uuid,
     model_id: Uuid,
+    document_version: i64,
+    source_asset_id: Uuid,
+    mask_asset_id: Uuid,
     #[serde(default)]
     prompt: String,
     #[serde(default)]
@@ -386,6 +389,11 @@ async fn ai_expand(
 ) -> AppResult<(StatusCode, Json<tasks::EditorTaskCreated>)> {
     current.require_password_changed()?;
     let view = load_view(&state, current.id, document_id).await?;
+    if input.document_version != view.version {
+        return Err(AppError::Conflict(
+            "AI outpaint is based on a stale editor document version".to_owned(),
+        ));
+    }
     let capabilities = sqlx::query_scalar::<_, Value>(
         r#"
         SELECT m.capabilities
@@ -400,14 +408,20 @@ async fn ai_expand(
     .fetch_optional(&state.db)
     .await?
     .ok_or(AppError::NotFound)?;
-    if !supports_outpaint(&capabilities) {
+    if !supports_image_edit(&capabilities)
+        || !supports_outpaint(&capabilities)
+        || !supports_mask(&capabilities)
+    {
         return Err(AppError::Validation(
-            "the selected model has not declared AI outpaint support".to_owned(),
+            "the selected model has not declared image edit, outpaint and mask support".to_owned(),
         ));
     }
-    if !supports_input_mime(&capabilities, &view.image_asset.mime_type) {
+    let source_input = load_asset(&state, current.id, input.source_asset_id).await?;
+    let mask_input = load_asset(&state, current.id, input.mask_asset_id).await?;
+    validate_outpaint_inputs(&source_input, &mask_input, &input.parameters)?;
+    if !supports_input_mime(&capabilities, &source_input.mime_type) {
         return Err(AppError::Validation(
-            "the selected model does not support the current image format".to_owned(),
+            "the selected model does not support PNG outpaint inputs".to_owned(),
         ));
     }
     let created = tasks::create_editor_task(
@@ -419,7 +433,17 @@ async fn ai_expand(
             provider_id: input.provider_id,
             model_id: input.model_id,
             parameters: Value::Object(input.parameters),
-            input_asset_ids: vec![view.document.image.asset_id],
+            inputs: vec![
+                tasks::NewEditorTaskInput {
+                    asset_id: input.source_asset_id,
+                    input_role: "source".to_owned(),
+                },
+                tasks::NewEditorTaskInput {
+                    asset_id: input.mask_asset_id,
+                    input_role: "mask".to_owned(),
+                },
+            ],
+            result_parent_asset_id: view.document.image.asset_id,
         },
     )
     .await?;
@@ -435,12 +459,74 @@ fn supports_outpaint(capabilities: &Value) -> bool {
         .unwrap_or(false)
 }
 
+fn supports_image_edit(capabilities: &Value) -> bool {
+    capabilities
+        .get("image_edit_capability")
+        .and_then(|value| value.get("supportsImageEdit"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn supports_mask(capabilities: &Value) -> bool {
+    capabilities
+        .get("image_edit_capability")
+        .and_then(|value| value.get("supportsMask"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
 fn supports_input_mime(capabilities: &Value, mime_type: &str) -> bool {
     capabilities
         .get("image_edit_capability")
         .and_then(|value| value.get("supportedInputMimeTypes"))
         .and_then(Value::as_array)
         .is_some_and(|values| values.iter().any(|value| value.as_str() == Some(mime_type)))
+}
+
+fn validate_outpaint_inputs(
+    source: &AssetRow,
+    mask: &AssetRow,
+    parameters: &Map<String, Value>,
+) -> AppResult<()> {
+    if source.id == mask.id {
+        return Err(AppError::Validation(
+            "outpaint source and mask must be different assets".to_owned(),
+        ));
+    }
+    if source.mime_type != "image/png" || mask.mime_type != "image/png" {
+        return Err(AppError::Validation(
+            "outpaint source and mask must both be PNG images".to_owned(),
+        ));
+    }
+    let source_size = source.width.zip(source.height);
+    let mask_size = mask.width.zip(mask.height);
+    if source_size.is_none() || source_size != mask_size {
+        return Err(AppError::Validation(
+            "outpaint source and mask must have identical decoded dimensions".to_owned(),
+        ));
+    }
+    let (width, height) = source_size.expect("source dimensions were checked");
+    validate_canvas_size(width, height)?;
+    let declared_size = parameters
+        .get("size")
+        .and_then(Value::as_str)
+        .and_then(parse_pixel_size)
+        .ok_or_else(|| {
+            AppError::Validation("outpaint requires an explicit WIDTHxHEIGHT size".to_owned())
+        })?;
+    if declared_size != (width, height) {
+        return Err(AppError::Validation(
+            "outpaint input dimensions do not match the requested size".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn parse_pixel_size(value: &str) -> Option<(i32, i32)> {
+    let (width, height) = value.split_once('x')?;
+    let width = width.parse().ok()?;
+    let height = height.parse().ok()?;
+    (width > 0 && height > 0).then_some((width, height))
 }
 
 async fn load_view(state: &AppState, owner_id: Uuid, document_id: Uuid) -> AppResult<DocumentView> {
@@ -706,6 +792,39 @@ mod tests {
             }),
             "image/png"
         ));
+        let complete = serde_json::json!({
+            "image_edit_capability": {
+                "supportsImageEdit": true,
+                "supportsOutpaint": true,
+                "supportsMask": true,
+                "supportedInputMimeTypes": ["image/png"]
+            }
+        });
+        assert!(supports_image_edit(&complete));
+        assert!(supports_outpaint(&complete));
+        assert!(supports_mask(&complete));
+    }
+
+    #[test]
+    fn outpaint_inputs_require_distinct_matching_png_images_and_size() {
+        let source = AssetRow {
+            id: Uuid::new_v4(),
+            mime_type: "image/png".to_owned(),
+            width: Some(1536),
+            height: Some(1024),
+            file_size_bytes: 1,
+        };
+        let mut mask = source.clone();
+        mask.id = Uuid::new_v4();
+        let parameters =
+            serde_json::Map::from_iter([("size".to_owned(), serde_json::json!("1536x1024"))]);
+        assert!(validate_outpaint_inputs(&source, &mask, &parameters).is_ok());
+
+        mask.width = Some(1024);
+        assert!(validate_outpaint_inputs(&source, &mask, &parameters).is_err());
+        mask.width = Some(1536);
+        mask.mime_type = "image/jpeg".to_owned();
+        assert!(validate_outpaint_inputs(&source, &mask, &parameters).is_err());
     }
 
     #[test]

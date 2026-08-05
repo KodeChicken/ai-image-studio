@@ -7,6 +7,11 @@ export interface EditorExportOptions {
   quality?: number
 }
 
+export interface OutpaintInputBlobs {
+  image: Blob
+  mask: Blob
+}
+
 const MIME_TYPES: Record<EditorExportFormat, string> = {
   png: 'image/png',
   jpeg: 'image/jpeg',
@@ -23,20 +28,90 @@ export async function renderEditorDocument(
     throw new Error('透明背景不能导出 JPEG，请选择 PNG、WebP 或设置背景色')
   }
   const source = await loadSourceImage(imageUrl)
-  const canvas = window.document.createElement('canvas')
-  canvas.width = document.canvas.width
-  canvas.height = document.canvas.height
+  const canvas = createCanvas(document.canvas.width, document.canvas.height)
   const context = canvas.getContext('2d', { alpha: options.format !== 'jpeg' })
   if (!context) {
     source.close?.()
     throw new Error('当前浏览器无法创建图片导出画布')
   }
-  context.imageSmoothingEnabled = true
-  context.imageSmoothingQuality = 'high'
-  drawBackground(context, source, document)
-  drawImageElement(context, source, document)
-  source.close?.()
-  return canvasToBlob(canvas, MIME_TYPES[options.format], options.quality ?? 0.95)
+  try {
+    context.imageSmoothingEnabled = true
+    context.imageSmoothingQuality = 'high'
+    drawBackground(context, source, document)
+    drawImageElement(context, source, document)
+    return await canvasToBlob(canvas, MIME_TYPES[options.format], options.quality ?? 0.95)
+  } finally {
+    source.close?.()
+    releaseCanvas(canvas)
+  }
+}
+
+export async function renderOutpaintInputs(
+  document: ImageEditorDocumentV1,
+  imageUrl: string,
+): Promise<OutpaintInputBlobs> {
+  assertCanvasSize(document.canvas.width, document.canvas.height)
+  const source = await loadSourceImage(imageUrl)
+  const imageCanvas = createCanvas(document.canvas.width, document.canvas.height)
+  const maskCanvas = createCanvas(document.canvas.width, document.canvas.height)
+  const imageContext = imageCanvas.getContext('2d')
+  const maskContext = maskCanvas.getContext('2d')
+  if (!imageContext || !maskContext) {
+    source.close?.()
+    releaseCanvas(imageCanvas)
+    releaseCanvas(maskCanvas)
+    throw new Error('当前浏览器无法创建 AI 扩图输入画布')
+  }
+  try {
+    drawImageElement(imageContext, source, document)
+    drawImageElement(maskContext, source, document)
+    maskContext.globalCompositeOperation = 'source-in'
+    maskContext.fillStyle = '#ffffff'
+    maskContext.fillRect(0, 0, document.canvas.width, document.canvas.height)
+    const [image, mask] = await Promise.all([
+      canvasToBlob(imageCanvas, 'image/png', 1),
+      canvasToBlob(maskCanvas, 'image/png', 1),
+    ])
+    return { image, mask }
+  } finally {
+    source.close?.()
+    releaseCanvas(imageCanvas)
+    releaseCanvas(maskCanvas)
+  }
+}
+
+export async function sampleImageColor(imageUrl: string): Promise<string> {
+  const source = await loadSourceImage(imageUrl)
+  const canvas = createCanvas(32, 32)
+  const context = canvas.getContext('2d', { willReadFrequently: true })
+  if (!context) {
+    source.close?.()
+    releaseCanvas(canvas)
+    throw new Error('当前浏览器无法读取图片颜色')
+  }
+  try {
+    context.drawImage(source, 0, 0, canvas.width, canvas.height)
+    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data
+    let red = 0
+    let green = 0
+    let blue = 0
+    let weight = 0
+    for (let index = 0; index < pixels.length; index += 4) {
+      const alpha = pixels[index + 3]! / 255
+      if (alpha === 0) continue
+      red += pixels[index]! * alpha
+      green += pixels[index + 1]! * alpha
+      blue += pixels[index + 2]! * alpha
+      weight += alpha
+    }
+    if (weight === 0) throw new Error('图片没有可取色的不透明像素')
+    return `#${[red, green, blue]
+      .map((value) => Math.round(value / weight).toString(16).padStart(2, '0'))
+      .join('')}`
+  } finally {
+    source.close?.()
+    releaseCanvas(canvas)
+  }
 }
 
 type CanvasSource = CanvasImageSource & { width: number; height: number; close?: () => void }
@@ -125,4 +200,16 @@ function canvasToBlob(canvas: HTMLCanvasElement, mimeType: string, quality: numb
       quality,
     )
   })
+}
+
+function createCanvas(width: number, height: number) {
+  const canvas = window.document.createElement('canvas')
+  canvas.width = width
+  canvas.height = height
+  return canvas
+}
+
+function releaseCanvas(canvas: HTMLCanvasElement) {
+  canvas.width = 0
+  canvas.height = 0
 }

@@ -21,7 +21,15 @@ import {
 } from './editorDocument'
 import { EditorHistory } from './editorHistory'
 import { applyFitStrategy } from './fitStrategies'
-import { renderEditorDocument, type EditorExportFormat } from './exporter'
+import { centerCrop, fitCropToRatio, resizeCropWithRatio } from './cropGeometry'
+import { centerImage, fitImageToEdge, rotateImageAroundCenter } from './imageTransforms'
+import { modelHasExplicitOutpaintSize, prepareOutpaint } from './outpaint'
+import {
+  renderEditorDocument,
+  renderOutpaintInputs,
+  sampleImageColor,
+  type EditorExportFormat,
+} from './exporter'
 
 const route = useRoute()
 const router = useRouter()
@@ -42,6 +50,7 @@ const history = new EditorHistory(100)
 const historyRevision = ref(0)
 const canvasRef = ref<InstanceType<typeof EditorCanvas> | null>(null)
 let saveTimer: ReturnType<typeof setTimeout> | null = null
+let savePromise: Promise<void> | null = null
 let dimensionFrame = 0
 let inputSessionStart: ImageEditorDocumentV1 | null = null
 
@@ -56,14 +65,22 @@ const dimensionError = ref('')
 const cropError = ref('')
 const aspectLocked = ref(false)
 const lockedRatio = ref(1)
+const cropAspectLocked = ref(false)
+const cropLockedRatio = ref(1)
+const customCropRatioWidth = ref('16')
+const customCropRatioHeight = ref('9')
+const rotationDraft = ref('0')
+const rotationError = ref('')
 const exportFormat = ref<EditorExportFormat>('png')
 const exporting = ref(false)
 const exportResult = ref<EditorAsset | null>(null)
+const pickingColor = ref(false)
 const models = ref<ImageModel[]>([])
 const aiModelId = ref<string | null>(null)
 const aiPrompt = ref('')
 const aiRunning = ref(false)
 const aiStage = ref('')
+const aiFailedTaskId = ref<string | null>(null)
 const assetCache = new Map<string, EditorAsset>()
 
 const canUndo = computed(() => (historyRevision.value >= 0 && history.canUndo))
@@ -76,12 +93,25 @@ const outpaintModels = computed(() => models.value.filter((model) => {
   return model.enabled
     && capability?.supportsImageEdit
     && capability.supportsOutpaint
-    && Boolean(currentAsset.value && capability.supportedInputMimeTypes.includes(currentAsset.value.mimeType))
+    && capability.supportsMask
+    && Array.isArray(capability.supportedInputMimeTypes)
+    && capability.supportedInputMimeTypes.includes('image/png')
+    && modelHasExplicitOutpaintSize(model)
 }))
 const aiModelOptions = computed(() => outpaintModels.value.map((model) => ({
   label: `${model.displayName} · ${model.providerType}`,
   value: model.id,
 })))
+const editorTools = computed<Array<{ id: EditorTool; icon: string; label: string }>>(() => {
+  const items: Array<{ id: EditorTool; icon: string; label: string }> = [
+    { id: 'select', icon: '⌖', label: '选择' },
+    { id: 'crop', icon: '⌗', label: '裁剪' },
+    { id: 'canvas', icon: '▣', label: '画布' },
+    { id: 'background', icon: '◐', label: '背景' },
+  ]
+  if (outpaintModels.value.length) items.push({ id: 'ai', icon: '✦', label: 'AI 扩图' })
+  return items
+})
 const statusLabel = computed(() => ({
   saved: '已保存', dirty: '有未保存修改', saving: '保存中…', error: '保存失败',
 })[saveState.value])
@@ -113,6 +143,11 @@ watch(() => editorDocument.value?.image.assetId, (assetId) => {
 watch(aspectLocked, (locked) => {
   if (locked && editorDocument.value) {
     lockedRatio.value = editorDocument.value.canvas.width / editorDocument.value.canvas.height
+  }
+})
+watch(cropAspectLocked, (locked) => {
+  if (locked && editorDocument.value) {
+    cropLockedRatio.value = editorDocument.value.image.crop.width / editorDocument.value.image.crop.height
   }
 })
 
@@ -179,21 +214,20 @@ function markDirty() {
 
 async function saveDocument(showSuccess = true): Promise<void> {
   if (!editorDocument.value || !documentView.value) return
-  if (saving.value) {
-    markDirty()
-    return
-  }
+  if (savePromise) await savePromise
+  if (!editorDocument.value || !documentView.value) return
   const snapshot = cloneEditorDocument(editorDocument.value)
+  const documentId = documentView.value.id
   const snapshotFingerprint = fingerprint(snapshot)
   if (snapshotFingerprint === savedFingerprint.value) {
     saveState.value = 'saved'
     return
   }
-  saving.value = true
-  saveState.value = 'saving'
-  try {
+  const operation = (async () => {
+    saving.value = true
+    saveState.value = 'saving'
     const saved = await api<ImageEditDocumentResponse>(
-      `/api/v1/image-edit-documents/${documentView.value.id}`,
+      `/api/v1/image-edit-documents/${documentId}`,
       {
         method: 'PUT',
         body: JSON.stringify({ version: version.value, schemaVersion: 1, document: snapshot }),
@@ -206,14 +240,22 @@ async function saveDocument(showSuccess = true): Promise<void> {
       saveState.value = 'saved'
       if (showSuccess) message.success('编辑文档已保存')
     } else {
-      markDirty()
+      saveState.value = 'dirty'
     }
+  })()
+  savePromise = operation
+  try {
+    await operation
   } catch (error) {
     saveState.value = 'error'
     if (showSuccess) message.error(error instanceof Error ? error.message : '保存失败')
     throw error
   } finally {
     saving.value = false
+    if (savePromise === operation) savePromise = null
+  }
+  if (editorDocument.value && fingerprint(editorDocument.value) !== savedFingerprint.value) {
+    await saveDocument(showSuccess)
   }
 }
 
@@ -263,8 +305,12 @@ function updateCanvasDraft(edge: 'width' | 'height', value: string) {
     dimensionError.value = '请输入 16–8192 的整数像素值'
     return
   }
-  let width = edge === 'width' ? entered : editorDocument.value.canvas.width
-  let height = edge === 'height' ? entered : editorDocument.value.canvas.height
+  let width = edge === 'width'
+    ? entered
+    : (parseExactInteger(widthDraft.value) ?? editorDocument.value.canvas.width)
+  let height = edge === 'height'
+    ? entered
+    : (parseExactInteger(heightDraft.value) ?? editorDocument.value.canvas.height)
   if (aspectLocked.value) {
     if (edge === 'width') height = Math.round(width / lockedRatio.value)
     else width = Math.round(height * lockedRatio.value)
@@ -295,30 +341,82 @@ function updateCropDraft(field: 'x' | 'y' | 'width' | 'height', value: string) {
   const drafts = { x: cropXDraft, y: cropYDraft, width: cropWidthDraft, height: cropHeightDraft }
   drafts[field].value = value
   if (!editorDocument.value || !currentAsset.value) return
-  const crop = {
-    x: parseExactInteger(cropXDraft.value, true),
-    y: parseExactInteger(cropYDraft.value, true),
-    width: parseExactInteger(cropWidthDraft.value),
-    height: parseExactInteger(cropHeightDraft.value),
-  }
-  if (Object.values(crop).some((number) => number === null)) {
+  const x = parseExactInteger(cropXDraft.value, true)
+  const y = parseExactInteger(cropYDraft.value, true)
+  const width = cropAspectLocked.value && field === 'height'
+    ? editorDocument.value.image.crop.width
+    : parseExactInteger(cropWidthDraft.value)
+  const height = cropAspectLocked.value && field === 'width'
+    ? editorDocument.value.image.crop.height
+    : parseExactInteger(cropHeightDraft.value)
+  if (x === null || y === null || width === null || height === null) {
     cropError.value = '裁剪位置和尺寸必须是整数'
     return
   }
+  let crop = { x, y, width, height }
+  if (cropAspectLocked.value && (field === 'width' || field === 'height')) {
+    crop = resizeCropWithRatio(crop, field, field === 'width' ? width : height, cropLockedRatio.value)
+  }
   try {
-    assertCropRect(crop as { x: number; y: number; width: number; height: number }, currentAsset.value.width, currentAsset.value.height)
+    assertCropRect(crop, currentAsset.value.width, currentAsset.value.height)
     cropError.value = ''
   } catch (error) {
     cropError.value = error instanceof Error ? error.message : '裁剪区域无效'
     return
   }
+  if (cropAspectLocked.value) {
+    if (field === 'width' && activeInput.value !== 'crop-height') cropHeightDraft.value = String(crop.height)
+    if (field === 'height' && activeInput.value !== 'crop-width') cropWidthDraft.value = String(crop.width)
+  }
   cancelAnimationFrame(dimensionFrame)
   dimensionFrame = requestAnimationFrame(() => {
     if (!editorDocument.value) return
     const next = cloneEditorDocument(editorDocument.value)
-    next.image.crop = crop as { x: number; y: number; width: number; height: number }
+    next.image.crop = crop
     commitDocument(tool.value === 'crop' ? cropAsCanvas(next) : next, false)
   })
+}
+
+function applyCropRatio(ratioWidth: number, ratioHeight: number) {
+  if (!editorDocument.value || !currentAsset.value) return
+  try {
+    const crop = editorDocument.value.image.crop
+    const next = cloneEditorDocument(editorDocument.value)
+    next.image.crop = fitCropToRatio(
+      currentAsset.value.width,
+      currentAsset.value.height,
+      ratioWidth,
+      ratioHeight,
+      { x: crop.x + crop.width / 2, y: crop.y + crop.height / 2 },
+    )
+    cropError.value = ''
+    customCropRatioWidth.value = String(ratioWidth)
+    customCropRatioHeight.value = String(ratioHeight)
+    if (cropAspectLocked.value) cropLockedRatio.value = ratioWidth / ratioHeight
+    commitDocument(cropAsCanvas(next))
+  } catch (error) {
+    cropError.value = error instanceof Error ? error.message : '裁剪比例无效'
+  }
+}
+
+function applyCustomCropRatio() {
+  const width = Number(customCropRatioWidth.value)
+  const height = Number(customCropRatioHeight.value)
+  applyCropRatio(width, height)
+}
+
+function centerCurrentCrop() {
+  if (!editorDocument.value || !currentAsset.value) return
+  const next = cloneEditorDocument(editorDocument.value)
+  next.image.crop = centerCrop(next.image.crop, currentAsset.value.width, currentAsset.value.height)
+  commitDocument(cropAsCanvas(next))
+}
+
+function restoreFullCrop() {
+  if (!editorDocument.value || !currentAsset.value) return
+  const next = cloneEditorDocument(editorDocument.value)
+  next.image.crop = { x: 0, y: 0, width: currentAsset.value.width, height: currentAsset.value.height }
+  commitDocument(cropAsCanvas(next))
 }
 
 function applyCanvasPreset(width: number, height: number) {
@@ -356,7 +454,7 @@ function setBackgroundColor(color: string) {
   if (!editorDocument.value || editorDocument.value.canvas.background.type !== 'color') return
   const next = cloneEditorDocument(editorDocument.value)
   next.canvas.background = { type: 'color', color }
-  commitDocument(next)
+  commitDocument(next, false)
 }
 
 function setBlurRadius(value: string) {
@@ -364,15 +462,35 @@ function setBlurRadius(value: string) {
   if (!editorDocument.value || !Number.isFinite(blurRadius)) return
   const next = cloneEditorDocument(editorDocument.value)
   next.canvas.background = { type: 'blurred-image', blurRadius: Math.max(0, Math.min(100, blurRadius)) }
-  commitDocument(next)
+  commitDocument(next, false)
 }
 
 function rotateBy(degrees: number) {
   if (!editorDocument.value) return
-  const next = cloneEditorDocument(editorDocument.value)
-  next.layout.fitStrategy = 'free'
-  next.image.rotation = ((next.image.rotation + degrees) % 360 + 360) % 360
-  commitDocument(next)
+  commitDocument(rotateImageAroundCenter(
+    editorDocument.value,
+    editorDocument.value.image.rotation + degrees,
+  ))
+}
+
+function updateRotationDraft(value: string) {
+  rotationDraft.value = value
+  if (!editorDocument.value) return
+  const rotation = Number(value)
+  if (!value.trim() || !Number.isFinite(rotation) || Math.abs(rotation) > 3600) {
+    rotationError.value = '请输入 -3600° 到 3600° 之间的角度'
+    return
+  }
+  rotationError.value = ''
+  commitDocument(rotateImageAroundCenter(editorDocument.value, rotation), false)
+}
+
+function centerCurrentImage() {
+  if (editorDocument.value) commitDocument(centerImage(editorDocument.value))
+}
+
+function fitCurrentImage(edge: 'width' | 'height') {
+  if (editorDocument.value) commitDocument(fitImageToEdge(editorDocument.value, edge))
 }
 
 function toggleFlip(edge: 'x' | 'y') {
@@ -382,6 +500,28 @@ function toggleFlip(edge: 'x' | 'y') {
   if (edge === 'x') next.image.flipX = !next.image.flipX
   else next.image.flipY = !next.image.flipY
   commitDocument(next)
+}
+
+async function pickBackgroundColor() {
+  if (!editorDocument.value || !currentAsset.value) return
+  pickingColor.value = true
+  try {
+    const EyeDropper = (window as unknown as {
+      EyeDropper?: new () => { open: () => Promise<{ sRGBHex: string }> }
+    }).EyeDropper
+    const color = EyeDropper
+      ? (await new EyeDropper().open()).sRGBHex
+      : await sampleImageColor(currentAsset.value.contentUrl)
+    const next = cloneEditorDocument(editorDocument.value)
+    next.canvas.background = { type: 'color', color }
+    commitDocument(next)
+  } catch (error) {
+    if (!(error instanceof DOMException && error.name === 'AbortError')) {
+      message.error(error instanceof Error ? error.message : '图片取色失败')
+    }
+  } finally {
+    pickingColor.value = false
+  }
 }
 
 async function exportImage() {
@@ -414,11 +554,22 @@ async function exportImage() {
 }
 
 async function runAiExpand() {
-  if (!documentView.value || !selectedAiModel.value || !editorDocument.value) return
+  if (!documentView.value || !selectedAiModel.value || !editorDocument.value || !currentAsset.value) return
   aiRunning.value = true
-  aiStage.value = '正在创建扩图任务…'
+  aiStage.value = '正在生成扩图画布与蒙版…'
+  aiFailedTaskId.value = null
+  const uploadedAssetIds: string[] = []
+  let taskCreated = false
   try {
     await saveDocument(false)
+    const prepared = prepareOutpaint(editorDocument.value, selectedAiModel.value)
+    const inputs = await renderOutpaintInputs(prepared.document, currentAsset.value.contentUrl)
+    aiStage.value = '正在上传扩图画布与蒙版…'
+    const sourceInput = await uploadEditorInput(inputs.image, 'outpaint-source.png')
+    uploadedAssetIds.push(sourceInput.id)
+    const maskInput = await uploadEditorInput(inputs.mask, 'outpaint-mask.png')
+    uploadedAssetIds.push(maskInput.id)
+    aiStage.value = '正在创建扩图任务…'
     const created = await api<{ taskId: string }>(
       `/api/v1/image-edit-documents/${documentView.value.id}/ai-expand`,
       {
@@ -427,29 +578,72 @@ async function runAiExpand() {
           providerId: selectedAiModel.value.providerId,
           modelId: selectedAiModel.value.id,
           prompt: aiPrompt.value,
-          parameters: {},
+          documentVersion: version.value,
+          sourceAssetId: sourceInput.id,
+          maskAssetId: maskInput.id,
+          parameters: prepared.parameters,
         }),
       },
     )
-    await streamTask(created.taskId, (event) => {
-      if (event.type === 'task.progress') aiStage.value = stageLabel(String(event.data.stage ?? 'processing'))
-    })
-    const task = await api<{ results: EditorAsset[]; errorMessage?: string | null }>(`/api/v1/tasks/${created.taskId}`)
-    const result = task.results[0]
-    if (!result || !editorDocument.value) throw new Error(task.errorMessage ?? 'AI 扩图没有返回图片')
-    assetCache.set(result.id, result)
-    currentAsset.value = result
-    const next = cloneEditorDocument(editorDocument.value)
-    next.image.assetId = result.id
-    next.image.crop = { x: 0, y: 0, width: result.width, height: result.height }
-    commitDocument(applyFitStrategy(next, 'cover'))
-    message.success('AI 扩图完成，结果已作为新的派生图片加入当前文档')
+    taskCreated = true
+    await finishAiTask(created.taskId)
   } catch (error) {
+    if (!taskCreated && uploadedAssetIds.length) await cleanupUploadedInputs(uploadedAssetIds)
     message.error(error instanceof Error ? error.message : 'AI 扩图失败，当前画布未被替换')
   } finally {
     aiRunning.value = false
     aiStage.value = ''
   }
+}
+
+async function retryAiExpand() {
+  if (!aiFailedTaskId.value || aiRunning.value) return
+  aiRunning.value = true
+  aiStage.value = '正在重试扩图任务…'
+  try {
+    const retried = await api<{ taskId: string; lastEventId: number }>(
+      `/api/v1/tasks/${aiFailedTaskId.value}/retry`,
+      { method: 'POST' },
+    )
+    await finishAiTask(retried.taskId, String(retried.lastEventId))
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '扩图任务重试失败')
+  } finally {
+    aiRunning.value = false
+    aiStage.value = ''
+  }
+}
+
+async function finishAiTask(taskId: string, initialLastEventId?: string) {
+  await streamTask(taskId, (event) => {
+    if (event.type === 'task.progress') aiStage.value = stageLabel(String(event.data.stage ?? 'processing'))
+  }, initialLastEventId ? { initialLastEventId } : undefined)
+  const task = await api<{ results: EditorAsset[]; errorMessage?: string | null }>(`/api/v1/tasks/${taskId}`)
+  const result = task.results[0]
+  if (!result || !editorDocument.value) {
+    aiFailedTaskId.value = taskId
+    throw new Error(task.errorMessage ?? 'AI 扩图没有返回图片')
+  }
+  assetCache.set(result.id, result)
+  currentAsset.value = result
+  const next = cloneEditorDocument(editorDocument.value)
+  next.image.assetId = result.id
+  next.image.crop = { x: 0, y: 0, width: result.width, height: result.height }
+  commitDocument(applyFitStrategy(next, 'cover'))
+  aiFailedTaskId.value = null
+  message.success('AI 扩图完成，目标画布保持不变，结果仍可撤销和继续编辑')
+}
+
+async function uploadEditorInput(blob: Blob, filename: string) {
+  const form = new FormData()
+  form.append('file', blob, filename)
+  return api<EditorAsset>('/api/v1/image-assets/uploads', { method: 'POST', body: form })
+}
+
+async function cleanupUploadedInputs(assetIds: string[]) {
+  await Promise.allSettled(assetIds.map((assetId) => (
+    api<void>(`/api/v1/image-assets/${assetId}`, { method: 'DELETE' })
+  )))
 }
 
 function imageEditCapability(model: ImageModel): ImageEditCapability | null {
@@ -467,6 +661,7 @@ function syncDrafts() {
   if (activeInput.value !== 'crop-y') cropYDraft.value = String(Math.round(document.image.crop.y))
   if (activeInput.value !== 'crop-width') cropWidthDraft.value = String(Math.round(document.image.crop.width))
   if (activeInput.value !== 'crop-height') cropHeightDraft.value = String(Math.round(document.image.crop.height))
+  if (activeInput.value !== 'rotation') rotationDraft.value = String(document.image.rotation)
 }
 
 function parseExactInteger(value: string, allowZero = false): number | null {
@@ -486,6 +681,16 @@ function handleShortcut(event: KeyboardEvent) {
     return
   }
   if (typing || !editorDocument.value) return
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    tool.value = 'select'
+    return
+  }
+  if (event.key === 'Delete') {
+    event.preventDefault()
+    message.warning('当前版本的主图片是必需元素，不能删除；可使用“恢复原图”重置')
+    return
+  }
   const movement: Record<string, [number, number]> = {
     ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1],
   }
@@ -549,13 +754,7 @@ function fingerprint(document: ImageEditorDocumentV1) {
       <section class="editor-body">
         <nav class="editor-toolbar" aria-label="图片编辑工具">
           <button
-            v-for="item in [
-              { id: 'select', icon: '⌖', label: '选择' },
-              { id: 'crop', icon: '⌗', label: '裁剪' },
-              { id: 'canvas', icon: '▣', label: '画布' },
-              { id: 'background', icon: '◐', label: '背景' },
-              { id: 'ai', icon: '✦', label: 'AI 扩图' },
-            ]" :key="item.id" type="button" :class="{ active: tool === item.id }" @click="tool = item.id as EditorTool"
+            v-for="item in editorTools" :key="item.id" type="button" :class="{ active: tool === item.id }" @click="tool = item.id"
           >
             <i>{{ item.icon }}</i><span>{{ item.label }}</span>
           </button>
@@ -569,6 +768,7 @@ function fingerprint(document: ImageEditorDocumentV1) {
             :source-width="currentAsset.width"
             :source-height="currentAsset.height"
             :tool="tool"
+            :crop-aspect-locked="cropAspectLocked"
             @commit="commitCanvasChange"
             @zoom="zoom = $event"
           />
@@ -578,30 +778,41 @@ function fingerprint(document: ImageEditorDocumentV1) {
           <section v-if="tool === 'crop'">
             <header><div><h2>原图裁剪</h2><p>所有数值均为原图真实像素</p></div></header>
             <div class="field-grid four-fields">
-              <label>X<input :value="cropXDraft" inputmode="numeric" @focus="beginInput('crop-x')" @blur="finishInput('crop-x')" @input="updateCropDraft('x', ($event.target as HTMLInputElement).value)" /></label>
-              <label>Y<input :value="cropYDraft" inputmode="numeric" @focus="beginInput('crop-y')" @blur="finishInput('crop-y')" @input="updateCropDraft('y', ($event.target as HTMLInputElement).value)" /></label>
-              <label>宽<input :value="cropWidthDraft" inputmode="numeric" @focus="beginInput('crop-width')" @blur="finishInput('crop-width')" @input="updateCropDraft('width', ($event.target as HTMLInputElement).value)" /></label>
-              <label>高<input :value="cropHeightDraft" inputmode="numeric" @focus="beginInput('crop-height')" @blur="finishInput('crop-height')" @input="updateCropDraft('height', ($event.target as HTMLInputElement).value)" /></label>
+              <label>X<input aria-label="裁剪 X 坐标" :aria-invalid="Boolean(cropError)" aria-describedby="crop-error" :value="cropXDraft" inputmode="numeric" @focus="beginInput('crop-x')" @blur="finishInput('crop-x')" @input="updateCropDraft('x', ($event.target as HTMLInputElement).value)" /></label>
+              <label>Y<input aria-label="裁剪 Y 坐标" :aria-invalid="Boolean(cropError)" aria-describedby="crop-error" :value="cropYDraft" inputmode="numeric" @focus="beginInput('crop-y')" @blur="finishInput('crop-y')" @input="updateCropDraft('y', ($event.target as HTMLInputElement).value)" /></label>
+              <label>宽<input aria-label="裁剪宽度" :aria-invalid="Boolean(cropError)" aria-describedby="crop-error" :value="cropWidthDraft" inputmode="numeric" @focus="beginInput('crop-width')" @blur="finishInput('crop-width')" @input="updateCropDraft('width', ($event.target as HTMLInputElement).value)" /></label>
+              <label>高<input aria-label="裁剪高度" :aria-invalid="Boolean(cropError)" aria-describedby="crop-error" :value="cropHeightDraft" inputmode="numeric" @focus="beginInput('crop-height')" @blur="finishInput('crop-height')" @input="updateCropDraft('height', ($event.target as HTMLInputElement).value)" /></label>
             </div>
-            <p v-if="cropError" class="field-error">{{ cropError }}</p>
+            <label class="switch-row"><span>锁定裁剪比例</span><n-switch v-model:value="cropAspectLocked" /></label>
+            <p v-if="cropError" id="crop-error" class="field-error" role="alert">{{ cropError }}</p>
             <div class="preset-grid"><button
               v-for="ratio in [
                 { label: '1:1', w: 1, h: 1 }, { label: '4:3', w: 4, h: 3 }, { label: '3:4', w: 3, h: 4 },
                 { label: '16:9', w: 16, h: 9 }, { label: '9:16', w: 9, h: 16 },
-              ]" :key="ratio.label" type="button" @click="updateCropDraft('height', String(Math.min(currentAsset.height, Math.round(editorDocument.image.crop.width * ratio.h / ratio.w))))"
+              ]" :key="ratio.label" type="button" @click="applyCropRatio(ratio.w, ratio.h)"
             >{{ ratio.label }}</button></div>
+            <div class="custom-ratio-row">
+              <label>自定义比例宽<input v-model="customCropRatioWidth" aria-label="自定义裁剪比例宽" inputmode="decimal" /></label>
+              <span>:</span>
+              <label>自定义比例高<input v-model="customCropRatioHeight" aria-label="自定义裁剪比例高" inputmode="decimal" /></label>
+              <n-button size="small" @click="applyCustomCropRatio">应用</n-button>
+            </div>
+            <div class="crop-actions">
+              <n-button @click="centerCurrentCrop">居中选区</n-button>
+              <n-button @click="restoreFullCrop">恢复完整原图</n-button>
+            </div>
           </section>
 
           <template v-else-if="tool === 'canvas' || tool === 'select'">
             <section>
               <header><div><h2>成品画布</h2><p>宽高默认独立，不会自动修改</p></div><button type="button" class="swap-button" @click="swapCanvasEdges">⇄</button></header>
               <div class="field-grid dimension-fields">
-                <label>宽度<input :value="widthDraft" inputmode="numeric" @focus="beginInput('width')" @blur="finishInput('width')" @keydown.enter="($event.target as HTMLInputElement).blur()" @input="updateCanvasDraft('width', ($event.target as HTMLInputElement).value)" /></label>
+                <label>宽度<input aria-label="成品画布宽度" :aria-invalid="Boolean(dimensionError)" aria-describedby="dimension-error" :value="widthDraft" inputmode="numeric" @focus="beginInput('width')" @blur="finishInput('width')" @keydown.enter="($event.target as HTMLInputElement).blur()" @input="updateCanvasDraft('width', ($event.target as HTMLInputElement).value)" /></label>
                 <span>×</span>
-                <label>高度<input :value="heightDraft" inputmode="numeric" @focus="beginInput('height')" @blur="finishInput('height')" @keydown.enter="($event.target as HTMLInputElement).blur()" @input="updateCanvasDraft('height', ($event.target as HTMLInputElement).value)" /></label>
+                <label>高度<input aria-label="成品画布高度" :aria-invalid="Boolean(dimensionError)" aria-describedby="dimension-error" :value="heightDraft" inputmode="numeric" @focus="beginInput('height')" @blur="finishInput('height')" @keydown.enter="($event.target as HTMLInputElement).blur()" @input="updateCanvasDraft('height', ($event.target as HTMLInputElement).value)" /></label>
               </div>
               <label class="switch-row"><span>锁定宽高比</span><n-switch v-model:value="aspectLocked" /></label>
-              <p v-if="dimensionError" class="field-error">{{ dimensionError }}</p>
+              <p v-if="dimensionError" id="dimension-error" class="field-error" role="alert">{{ dimensionError }}</p>
               <div class="preset-grid"><button
                 v-for="preset in [
                   { label: '1:1', w: 1024, h: 1024 }, { label: '16:9', w: 1920, h: 1080 },
@@ -633,7 +844,11 @@ function fingerprint(document: ImageEditorDocumentV1) {
                   { label: '左下', value: 'bottom-left' }, { label: '下', value: 'bottom' }, { label: '右下', value: 'bottom-right' },
                 ]" @update:value="setAnchor($event as EditorAnchor)"
               /></label>
-              <div class="transform-actions"><n-button @click="rotateBy(-90)">左转 90°</n-button><n-button @click="rotateBy(90)">右转 90°</n-button><n-button @click="toggleFlip('x')">水平翻转</n-button><n-button @click="toggleFlip('y')">垂直翻转</n-button></div>
+              <label class="rotation-field">旋转角度
+                <input aria-label="图片旋转角度" :aria-invalid="Boolean(rotationError)" aria-describedby="rotation-error" :value="rotationDraft" inputmode="decimal" @focus="beginInput('rotation')" @blur="finishInput('rotation')" @keydown.enter="($event.target as HTMLInputElement).blur()" @input="updateRotationDraft(($event.target as HTMLInputElement).value)" />
+              </label>
+              <p v-if="rotationError" id="rotation-error" class="field-error" role="alert">{{ rotationError }}</p>
+              <div class="transform-actions"><n-button @click="rotateBy(-90)">左转 90°</n-button><n-button @click="rotateBy(90)">右转 90°</n-button><n-button @click="toggleFlip('x')">水平翻转</n-button><n-button @click="toggleFlip('y')">垂直翻转</n-button><n-button @click="centerCurrentImage">主体居中</n-button><n-button @click="fitCurrentImage('width')">适配宽度</n-button><n-button @click="fitCurrentImage('height')">适配高度</n-button><n-button @click="setFitStrategy('cover')">填满画布</n-button></div>
               <p class="quality-note">放大不会创造原图细节；导出始终重新读取当前原始 Asset，不使用屏幕预览图。</p>
             </section>
           </template>
@@ -647,8 +862,9 @@ function fingerprint(document: ImageEditorDocumentV1) {
                 ]" :key="option.value" type="button" :class="{ active: editorDocument.canvas.background.type === option.value }" @click="setBackground(option.value as EditorBackground['type'])"
               >{{ option.label }}</button>
             </div>
-            <label v-if="editorDocument.canvas.background.type === 'color'" class="color-field">背景颜色<input type="color" :value="editorDocument.canvas.background.color" @input="setBackgroundColor(($event.target as HTMLInputElement).value)" /></label>
-            <label v-if="editorDocument.canvas.background.type === 'blurred-image'" class="range-field">模糊强度<input type="range" min="0" max="100" :value="editorDocument.canvas.background.blurRadius" @input="setBlurRadius(($event.target as HTMLInputElement).value)" /><span>{{ editorDocument.canvas.background.blurRadius }}px</span></label>
+            <label v-if="editorDocument.canvas.background.type === 'color'" class="color-field">背景颜色<input type="color" :value="editorDocument.canvas.background.color" @focus="beginInput('background-color')" @blur="finishInput('background-color')" @input="setBackgroundColor(($event.target as HTMLInputElement).value)" /></label>
+            <n-button class="pick-color-button" :loading="pickingColor" block @click="pickBackgroundColor">从图片取色</n-button>
+            <label v-if="editorDocument.canvas.background.type === 'blurred-image'" class="range-field">模糊强度<input type="range" min="0" max="100" :value="editorDocument.canvas.background.blurRadius" @focus="beginInput('blur-radius')" @blur="finishInput('blur-radius')" @input="setBlurRadius(($event.target as HTMLInputElement).value)" /><span>{{ editorDocument.canvas.background.blurRadius }}px</span></label>
           </section>
 
           <section v-else-if="tool === 'ai'">
@@ -657,7 +873,8 @@ function fingerprint(document: ImageEditorDocumentV1) {
               <label>扩图模型<n-select v-model:value="aiModelId" :options="aiModelOptions" /></label>
               <label>补充说明（可留空）<n-input v-model:value="aiPrompt" type="textarea" :rows="4" placeholder="例如：向两侧自然延展海滩和天空，保持人物不变" /></label>
               <n-button type="primary" :loading="aiRunning" block @click="runAiExpand">{{ aiRunning ? aiStage : '开始 AI 扩图' }}</n-button>
-              <p>AI 失败不会替换当前图片；成功结果会保存为新的派生 Asset，仍可撤销。</p>
+              <n-button v-if="aiFailedTaskId" secondary block :loading="aiRunning" @click="retryAiExpand">重试上次扩图任务</n-button>
+              <p>系统会按目标画布生成透明外部区域和蒙版；AI 失败不会替换当前图片，成功结果会确定性适配回当前尺寸并可撤销。</p>
             </div>
             <div v-else class="capability-empty">当前没有模型明确声明支持图片扩图。请先在 Provider 模型能力中完成验证。</div>
           </section>
@@ -704,12 +921,15 @@ function fingerprint(document: ImageEditorDocumentV1) {
 .field-grid input { min-width: 0; height: 34px; padding: 0 9px; border: 1px solid rgba(255,255,255,.12); border-radius: 7px; outline: none; color: #fff; background: #191a1f; }.field-grid input:focus { border-color: #8b5cf6; box-shadow: 0 0 0 2px rgba(139,92,246,.16); }
 .field-error { margin: 8px 0 0; color: #fca5a5; font-size: 10px; }.switch-row { display: flex; align-items: center; justify-content: space-between; margin-top: 12px; color: #aaa5b3; font-size: 11px; }
 .preset-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 5px; margin-top: 12px; }.preset-grid button, .background-options button, .platform-presets button { min-height: 30px; padding: 4px; border: 1px solid rgba(255,255,255,.1); border-radius: 7px; cursor: pointer; color: #c7c2ce; background: #1b1c21; font-size: 10px; }.preset-grid button:hover, .background-options button.active { border-color: #8b5cf6; color: #fff; background: rgba(124,58,237,.25); }
+.custom-ratio-row { display: grid; grid-template-columns: 1fr auto 1fr auto; align-items: end; gap: 7px; margin-top: 10px; }.custom-ratio-row label, .rotation-field { display: grid; gap: 5px; color: #aaa5b3; font-size: 10px; }.custom-ratio-row > span { padding-bottom: 8px; }.custom-ratio-row input, .rotation-field input { min-width: 0; height: 32px; padding: 0 8px; border: 1px solid rgba(255,255,255,.12); border-radius: 7px; outline: none; color: #fff; background: #191a1f; }.crop-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 10px; }
 .platform-presets { margin-top: 12px; color: #aaa5b3; font-size: 10px; }.platform-presets summary { cursor: pointer; }.platform-presets div { display: grid; gap: 6px; margin-top: 8px; }.platform-presets button { text-align: left; }
-.swap-button { border: 0; cursor: pointer; color: #c4b5fd; background: transparent; font-size: 18px; }.select-field { margin-top: 12px; }.transform-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 12px; }.quality-note { margin-top: 12px; padding: 10px; border-radius: 8px; color: #c4b5fd; background: rgba(124,58,237,.12); }
+.swap-button { border: 0; cursor: pointer; color: #c4b5fd; background: transparent; font-size: 18px; }.select-field, .rotation-field { margin-top: 12px; }.transform-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 12px; }.quality-note { margin-top: 12px; padding: 10px; border-radius: 8px; color: #c4b5fd; background: rgba(124,58,237,.12); }
 .background-options { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; }.color-field, .range-field { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 16px; color: #aaa5b3; font-size: 11px; }.color-field input { width: 46px; height: 32px; padding: 2px; border: 1px solid rgba(255,255,255,.12); border-radius: 6px; background: transparent; }.range-field input { min-width: 0; flex: 1; }
+.pick-color-button { margin-top: 12px; }
 .ai-controls { display: grid; gap: 14px; }.capability-empty { padding: 16px; border: 1px dashed rgba(255,255,255,.15); border-radius: 10px; color: #928d9c; font-size: 11px; line-height: 1.6; }
 .export-result { display: grid; gap: 6px; color: #86efac; font-size: 11px; }.export-result span { color: #aaa5b3; }.export-result a { color: #c4b5fd; }
 .editor-statusbar { display: flex; align-items: center; gap: 18px; overflow-x: auto; padding: 0 14px; border-top: 1px solid rgba(255,255,255,.08); color: #8f8a98; background: #202126; font-size: 9px; white-space: nowrap; }
 @media (max-width: 1050px) { .editor-topbar { grid-template-columns: 1fr auto; }.editor-history-actions { display: none; }.editor-export-actions { min-width: 0; }.editor-export-actions > span, .editor-export-actions > .n-button:nth-of-type(1) { display: none; }.editor-body { grid-template-columns: 64px minmax(0,1fr) 290px; } }
 @media (max-width: 760px) { .image-editor-page { grid-template-rows: auto minmax(0,1fr) 28px; }.editor-topbar { min-height: 110px; grid-template-columns: 1fr; padding-block: 8px; }.editor-export-actions { justify-content: flex-start; flex-wrap: wrap; }.editor-body { position: relative; grid-template-columns: 1fr; grid-template-rows: minmax(380px,1fr) auto; overflow-y: auto; }.editor-toolbar { position: fixed; z-index: 8; right: 8px; bottom: 38px; left: 8px; height: 58px; align-items: center; flex-direction: row; justify-content: space-around; padding: 5px; border: 1px solid rgba(255,255,255,.1); border-radius: 14px; box-shadow: 0 8px 30px #0008; }.editor-toolbar button { min-width: 54px; min-height: 46px; }.editor-toolbar button i { font-size: 15px; }.editor-stage-wrap { grid-row: 1; min-height: 420px; }.editor-inspector { grid-row: 2; padding-bottom: 82px; border-top: 1px solid rgba(255,255,255,.08); border-left: 0; }.editor-statusbar { gap: 10px; } }
+@media (prefers-reduced-motion: reduce) { .image-editor-page *, .image-editor-page *::before, .image-editor-page *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; } }
 </style>

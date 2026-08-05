@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { deflateSync } from 'node:zlib'
 
 const user = {
   id: '00000000-0000-4000-8000-000000000001',
@@ -215,6 +216,39 @@ const digitalInternetStyleTemplate = {
   enabled: true,
 }
 
+function solidGrayscalePng(width: number, height: number) {
+  const scanlines = Buffer.alloc((width + 1) * height, 0xdd)
+  for (let row = 0; row < height; row += 1) scanlines[row * (width + 1)] = 0
+  const header = Buffer.alloc(13)
+  header.writeUInt32BE(width, 0)
+  header.writeUInt32BE(height, 4)
+  header.set([8, 0, 0, 0, 0], 8)
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    pngChunk('IHDR', header),
+    pngChunk('IDAT', deflateSync(scanlines)),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ])
+}
+
+function pngChunk(type: string, data: Buffer) {
+  const typeBytes = Buffer.from(type, 'ascii')
+  const length = Buffer.alloc(4)
+  length.writeUInt32BE(data.length)
+  const checksum = Buffer.alloc(4)
+  checksum.writeUInt32BE(crc32(Buffer.concat([typeBytes, data])))
+  return Buffer.concat([length, typeBytes, data, checksum])
+}
+
+function crc32(data: Buffer) {
+  let crc = 0xffffffff
+  for (const byte of data) {
+    crc ^= byte
+    for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1))
+  }
+  return (crc ^ 0xffffffff) >>> 0
+}
+
 async function mockApi(
   page: Page,
   initiallyAuthenticated: boolean,
@@ -231,6 +265,8 @@ async function mockApi(
     authUser?: typeof user
     includeTextModel?: boolean
     slowTask?: boolean
+    editorSourceWidth?: number
+    editorSourceHeight?: number
   } = {},
 ) {
   let authenticated = initiallyAuthenticated
@@ -242,14 +278,17 @@ async function mockApi(
   let createdConversation: typeof conversation | null = null
   let editorSourceAssetId = '73000000-0000-4000-8000-000000000099'
   let editorVersion = 1
+  const editorSourceWidth = options.editorSourceWidth ?? 1024
+  const editorSourceHeight = options.editorSourceHeight ?? 1024
+  const editorSourcePng = solidGrayscalePng(editorSourceWidth, editorSourceHeight)
   let editorDocument = {
     schemaVersion: 1 as const,
-    canvas: { width: 1024, height: 1024, background: { type: 'transparent' as const } },
+    canvas: { width: editorSourceWidth, height: editorSourceHeight, background: { type: 'transparent' as const } },
     layout: { fitStrategy: 'cover', anchor: 'center' },
     image: {
       assetId: '73000000-0000-4000-8000-000000000099',
       x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0, flipX: false, flipY: false,
-      crop: { x: 0, y: 0, width: 1024, height: 1024 },
+      crop: { x: 0, y: 0, width: editorSourceWidth, height: editorSourceHeight },
     },
   }
   const messages: Array<Record<string, unknown>> = []
@@ -283,11 +322,18 @@ async function mockApi(
     passwordRequests: [] as Array<Record<string, unknown>>,
     providerWrites: [] as Array<Record<string, unknown>>,
     testGenerationRequests: [] as Array<Record<string, unknown>>,
+    editorSaves: [] as Array<typeof editorDocument>,
+    editorExports: [] as Array<{ width: number; height: number; format: string }>,
   }
   await page.route('**/mock/generated.png', (route) => route.fulfill({
     status: 200,
     contentType: 'image/svg+xml',
     body: '<svg xmlns="http://www.w3.org/2000/svg" width="600" height="900"><rect width="600" height="900" fill="#ddd4c8"/><circle cx="300" cy="170" r="90" fill="#9b7e6b"/><rect x="165" y="285" width="270" height="500" rx="80" fill="#f4efe9"/></svg>',
+  }))
+  await page.route('**/mock/editor-source.png', (route) => route.fulfill({
+    status: 200,
+    contentType: 'image/png',
+    body: editorSourcePng,
   }))
   await page.route('**/api/v1/**', async (route) => {
     const request = route.request()
@@ -634,8 +680,26 @@ async function mockApi(
     if (path === '/api/v1/image-edit-documents/81000000-0000-4000-8000-000000000001' && method === 'PUT') {
       const input = request.postDataJSON() as { document: typeof editorDocument }
       editorDocument = structuredClone(input.document)
+      state.editorSaves.push(structuredClone(editorDocument))
       editorVersion += 1
       return fulfill(editorView())
+    }
+    if (path === '/api/v1/image-edit-documents/81000000-0000-4000-8000-000000000001/exports' && method === 'POST') {
+      const body = request.postData() ?? ''
+      const format = /name="format"\r\n\r\n([^\r]+)/.exec(body)?.[1] ?? 'png'
+      state.editorExports.push({
+        width: editorDocument.canvas.width,
+        height: editorDocument.canvas.height,
+        format,
+      })
+      return fulfill({
+        id: crypto.randomUUID(),
+        contentUrl: '/mock/generated.png',
+        mimeType: `image/${format}`,
+        width: editorDocument.canvas.width,
+        height: editorDocument.canvas.height,
+        fileSizeBytes: 1024,
+      }, 201)
     }
     if (path === '/api/v1/usage' && method === 'GET') {
       const beforeId = Number(url.searchParams.get('beforeId') || Number.MAX_SAFE_INTEGER)
@@ -706,10 +770,10 @@ async function mockApi(
   function editorView() {
     const asset = {
       id: editorDocument.image.assetId,
-      contentUrl: '/mock/generated.png',
+      contentUrl: '/mock/editor-source.png',
       mimeType: 'image/png',
-      width: 1024,
-      height: 1024,
+      width: editorSourceWidth,
+      height: editorSourceHeight,
       fileSizeBytes: 1024,
     }
     return {
@@ -1290,6 +1354,69 @@ test('conversation title search and complete history filters are functional', as
 
   await page.getByRole('button', { name: '重置' }).click()
   await expect.poll(() => state.historyQueries[state.historyQueries.length - 1]).toEqual({})
+})
+
+test('Konva editor keeps exact source-pixel crops, canvas layout and export formats across reloads', async ({ page }) => {
+  const pageErrors: string[] = []
+  page.on('pageerror', (error) => pageErrors.push(error.message))
+  const state = await mockApi(page, true, { editorSourceWidth: 4096, editorSourceHeight: 4096 })
+  await page.goto('/editor/73000000-0000-4000-8000-000000000099?documentId=81000000-0000-4000-8000-000000000001')
+
+  await expect(page.getByText('初始原图 4096 × 4096', { exact: true })).toBeVisible()
+  await expect(page.locator('.editor-toolbar')).not.toContainText('AI 扩图')
+
+  await page.getByText('裁剪', { exact: true }).click()
+  const crop = page.locator('.four-fields input')
+  await crop.nth(2).fill('1024')
+  await crop.nth(3).fill('576')
+  await expect(crop.nth(2)).toHaveValue('1024')
+  await expect(crop.nth(3)).toHaveValue('576')
+  await expect(page.getByText('成品 1024 × 576', { exact: true })).toBeVisible()
+
+  await page.getByRole('button', { name: '恢复完整原图' }).click()
+  await crop.nth(3).fill('261')
+  await expect(crop.nth(2)).toHaveValue('4096')
+  await expect(crop.nth(3)).toHaveValue('261')
+  await expect(page.getByText('成品 4096 × 261', { exact: true })).toBeVisible()
+
+  await page.getByText('选择', { exact: true }).click()
+  const canvas = page.locator('.dimension-fields input')
+  await canvas.nth(0).fill('1920')
+  await canvas.nth(1).fill('1080')
+  await page.getByRole('button', { name: '填满画布', exact: true }).click()
+  await expect(page.getByText('成品 1920 × 1080', { exact: true })).toBeVisible()
+
+  await page.getByText('背景', { exact: true }).click()
+  await page.getByRole('button', { name: '纯色', exact: true }).click()
+  await page.getByText('选择', { exact: true }).click()
+  await page.locator('.editor-inspector .n-select').first().click()
+  await page.getByText('完整显示（保持比例）', { exact: true }).last().click()
+
+  await page.getByRole('button', { name: '导出成品' }).click()
+  await expect.poll(() => state.editorExports.length).toBe(1)
+
+  await page.locator('.export-format').click()
+  await page.getByText('JPEG', { exact: true }).last().click()
+  await page.getByRole('button', { name: '导出成品' }).click()
+  await expect.poll(() => state.editorExports.length).toBe(2)
+
+  await page.locator('.export-format').click()
+  await page.getByText('WebP', { exact: true }).last().click()
+  await page.getByRole('button', { name: '导出成品' }).click()
+  await expect.poll(() => state.editorExports.length).toBe(3)
+  expect(state.editorExports).toEqual([
+    { width: 1920, height: 1080, format: 'png' },
+    { width: 1920, height: 1080, format: 'jpeg' },
+    { width: 1920, height: 1080, format: 'webp' },
+  ])
+  expect(state.editorSaves.every((document) => (
+    document.image.assetId === '73000000-0000-4000-8000-000000000099'
+  ))).toBe(true)
+
+  await page.reload()
+  await expect(page.locator('.dimension-fields input').nth(0)).toHaveValue('1920')
+  await expect(page.locator('.dimension-fields input').nth(1)).toHaveValue('1080')
+  expect(pageErrors).toEqual([])
 })
 
 test('usage records load additional cursor pages without replacing totals', async ({ page }) => {

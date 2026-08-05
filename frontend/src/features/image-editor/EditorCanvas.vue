@@ -11,6 +11,7 @@ const props = defineProps<{
   sourceWidth: number
   sourceHeight: number
   tool: EditorTool
+  cropAspectLocked: boolean
 }>()
 
 const emit = defineEmits<{
@@ -19,6 +20,7 @@ const emit = defineEmits<{
 }>()
 
 const container = ref<HTMLDivElement | null>(null)
+const stageHost = ref<HTMLDivElement | null>(null)
 const loadingImage = ref(true)
 let stage: Konva.Stage | null = null
 let layer: Konva.Layer | null = null
@@ -32,8 +34,8 @@ let panPointer = { x: 0, y: 0 }
 let renderFrame = 0
 
 onMounted(() => {
-  if (!container.value) return
-  stage = new Konva.Stage({ container: container.value, width: 1, height: 1 })
+  if (!container.value || !stageHost.value) return
+  stage = new Konva.Stage({ container: stageHost.value, width: 1, height: 1 })
   layer = new Konva.Layer()
   stage.add(layer)
   stage.on('wheel', handleWheel)
@@ -55,7 +57,7 @@ onBeforeUnmount(() => {
 
 watch(() => props.imageUrl, loadImage)
 watch(
-  () => [props.document, props.tool, props.sourceWidth, props.sourceHeight],
+  () => [props.document, props.tool, props.sourceWidth, props.sourceHeight, props.cropAspectLocked],
   scheduleRender,
   { deep: true },
 )
@@ -142,31 +144,53 @@ function renderCropScene(workspace: Konva.Group) {
     strokeWidth: 2 / workspace.scaleX(),
     draggable: true,
   })
-  selection.dragBoundFunc((position) => ({
-    x: clamp(position.x, 0, props.sourceWidth - selection.width()),
-    y: clamp(position.y, 0, props.sourceHeight - selection.height()),
-  }))
+  selection.dragBoundFunc((position) => {
+    const local = absoluteToLocal(workspace, position)
+    return localToAbsolute(workspace, {
+      x: clamp(local.x, 0, props.sourceWidth - selection.width()),
+      y: clamp(local.y, 0, props.sourceHeight - selection.height()),
+    })
+  })
   selection.on('dragend', () => commitCrop(selection))
   selection.on('transformend', () => commitCrop(selection))
   workspace.add(selection)
   const transformer = new Konva.Transformer({
     nodes: [selection],
     rotateEnabled: false,
-    keepRatio: false,
+    keepRatio: props.cropAspectLocked,
+    shiftBehavior: props.cropAspectLocked ? 'inverted' : 'default',
     flipEnabled: false,
     borderStroke: '#a78bfa',
     anchorFill: '#fff',
     anchorStroke: '#7c3aed',
     anchorSize: Math.max(7, 10 / workspace.scaleX()),
-    boundBoxFunc: (_oldBox, nextBox) => {
-      const width = clamp(nextBox.width, 16, props.sourceWidth)
-      const height = clamp(nextBox.height, 16, props.sourceHeight)
+    boundBoxFunc: (oldBox, nextBox) => {
+      const localTopLeft = absoluteToLocal(workspace, { x: nextBox.x, y: nextBox.y })
+      const localBottomRight = absoluteToLocal(workspace, {
+        x: nextBox.x + nextBox.width,
+        y: nextBox.y + nextBox.height,
+      })
+      let width = clamp(localBottomRight.x - localTopLeft.x, 16, props.sourceWidth)
+      let height = clamp(localBottomRight.y - localTopLeft.y, 16, props.sourceHeight)
+      if (props.cropAspectLocked) {
+        const ratio = props.document.image.crop.width / props.document.image.crop.height
+        if (width / height > ratio) width = height * ratio
+        else height = width / ratio
+        const sourceScale = Math.min(1, props.sourceWidth / width, props.sourceHeight / height)
+        width *= sourceScale
+        height *= sourceScale
+        if (width < 16 || height < 16) return oldBox
+      }
+      const topLeft = localToAbsolute(workspace, {
+        x: clamp(localTopLeft.x, 0, props.sourceWidth - width),
+        y: clamp(localTopLeft.y, 0, props.sourceHeight - height),
+      })
       return {
         ...nextBox,
-        x: clamp(nextBox.x, 0, props.sourceWidth - width),
-        y: clamp(nextBox.y, 0, props.sourceHeight - height),
-        width,
-        height,
+        x: topLeft.x,
+        y: topLeft.y,
+        width: width * workspace.getAbsoluteScale().x,
+        height: height * workspace.getAbsoluteScale().y,
       }
     },
   })
@@ -231,13 +255,34 @@ function renderCanvasScene(workspace: Konva.Group) {
       offsetX: image.flipX ? image.crop.width : 0,
       offsetY: image.flipY ? image.crop.height : 0,
       rotation: image.rotation,
-      draggable: true,
+      draggable: ['select', 'canvas'].includes(props.tool),
+    })
+    imageNode.dragBoundFunc((position) => {
+      const local = absoluteToLocal(workspace, position)
+      return localToAbsolute(
+        workspace,
+        snapImagePosition(local, image, canvas, workspace.getAbsoluteScale().x),
+      )
     })
     imageNode.on('dragend transformend', () => commitImageTransform(imageNode!))
     clipped.add(imageNode)
   }
   const safeInsetX = canvas.width * 0.05
   const safeInsetY = canvas.height * 0.05
+  workspace.add(new Konva.Line({
+    points: [canvas.width / 2, 0, canvas.width / 2, canvas.height],
+    stroke: 'rgba(167,139,250,.35)',
+    dash: [5 / workspace.scaleX(), 5 / workspace.scaleX()],
+    strokeWidth: 1 / workspace.scaleX(),
+    listening: false,
+  }))
+  workspace.add(new Konva.Line({
+    points: [0, canvas.height / 2, canvas.width, canvas.height / 2],
+    stroke: 'rgba(167,139,250,.35)',
+    dash: [5 / workspace.scaleX(), 5 / workspace.scaleX()],
+    strokeWidth: 1 / workspace.scaleX(),
+    listening: false,
+  }))
   workspace.add(new Konva.Rect({
     x: safeInsetX,
     y: safeInsetY,
@@ -252,6 +297,7 @@ function renderCanvasScene(workspace: Konva.Group) {
     workspace.add(new Konva.Transformer({
       nodes: [imageNode],
       keepRatio: true,
+      shiftBehavior: 'inverted',
       flipEnabled: false,
       borderStroke: '#a78bfa',
       anchorFill: '#fff',
@@ -305,6 +351,34 @@ function fitViewport() {
   scheduleRender()
 }
 
+function snapImagePosition(
+  position: { x: number; y: number },
+  image: ImageEditorDocumentV1['image'],
+  canvas: ImageEditorDocumentV1['canvas'],
+  viewportScale: number,
+) {
+  if (normalizeRotation(image.rotation) !== 0) return position
+  const threshold = 8 / viewportScale
+  const width = image.crop.width * image.scaleX
+  const height = image.crop.height * image.scaleY
+  return {
+    x: snapTo(position.x, [0, (canvas.width - width) / 2, canvas.width - width], threshold),
+    y: snapTo(position.y, [0, (canvas.height - height) / 2, canvas.height - height], threshold),
+  }
+}
+
+function snapTo(value: number, targets: number[], threshold: number) {
+  return targets.find((target) => Math.abs(target - value) <= threshold) ?? value
+}
+
+function absoluteToLocal(workspace: Konva.Group, point: { x: number; y: number }) {
+  return workspace.getAbsoluteTransform().copy().invert().point(point)
+}
+
+function localToAbsolute(workspace: Konva.Group, point: { x: number; y: number }) {
+  return workspace.getAbsoluteTransform().point(point)
+}
+
 function coverSourceCrop(sourceWidth: number, sourceHeight: number, width: number, height: number) {
   const sourceRatio = sourceWidth / sourceHeight
   const targetRatio = width / height
@@ -333,6 +407,7 @@ defineExpose({ fitViewport })
 
 <template>
   <div ref="container" class="editor-canvas" :class="{ loading: loadingImage }">
+    <div ref="stageHost" class="editor-canvas-stage" aria-hidden="true"></div>
     <div v-if="loadingImage" class="editor-canvas-loading">正在读取原始清晰图片…</div>
     <div v-else-if="!sourceImage" class="editor-canvas-loading error">原图加载失败</div>
     <div class="editor-canvas-tip">滚轮缩放 · Alt/中键拖动画布</div>
@@ -366,6 +441,7 @@ defineExpose({ fitViewport })
   font-size: 13px;
   backdrop-filter: blur(6px);
 }
+.editor-canvas-stage { position: absolute; inset: 0; }
 .editor-canvas-loading.error { color: #fca5a5; }
 .editor-canvas-tip {
   position: absolute;

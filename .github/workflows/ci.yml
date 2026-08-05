@@ -29,7 +29,7 @@ jobs:
       TEST_MIGRATION_UPGRADE: "1"
       SESSION_SECRET: ci-session-secret-at-least-32-characters
       CREDENTIAL_MASTER_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
-      STORAGE_LOCAL_PATH: ${{ runner.temp }}/ai-image-studio-images
+      STORAGE_LOCAL_PATH: /tmp/ai-image-studio-images
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -85,7 +85,7 @@ jobs:
       - name: Verify business table count
         run: |
           count=$(docker exec ${{ job.services.postgres.id }} psql -U ai_image_studio -d ai_image_studio -At -c "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE' AND table_name <> '_sqlx_migrations'")
-          test "$count" = "19"
+          test "$count" = "20"
 
   frontend:
     runs-on: ubuntu-latest
@@ -109,7 +109,7 @@ jobs:
         working-directory: frontend
       - run: pnpm build
         working-directory: frontend
-      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm exec playwright install --with-deps chromium webkit
         working-directory: frontend
       - run: pnpm test:e2e
         working-directory: frontend

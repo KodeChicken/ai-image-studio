@@ -72,6 +72,7 @@ pub(crate) struct ProviderInput {
     pub filename: String,
     pub mime_type: String,
     pub bytes: Bytes,
+    pub input_role: String,
 }
 
 #[derive(Clone)]
@@ -519,10 +520,15 @@ async fn call_openai_images_once(
             .text("model", request.model)
             .text("prompt", prompt);
         for input in request.inputs {
+            let field_name = if input.input_role == "mask" {
+                "mask"
+            } else {
+                "image[]"
+            };
             let part = reqwest::multipart::Part::bytes(input.bytes.to_vec())
                 .file_name(input.filename)
                 .mime_str(&input.mime_type)?;
-            form = form.part("image[]", part);
+            form = form.part(field_name, part);
         }
         for (key, value) in parameters {
             form = form.text(key, scalar_text(&value)?);
@@ -609,6 +615,13 @@ async fn call_gemini(
     request: ProviderRequest,
 ) -> anyhow::Result<Vec<ProviderImage>> {
     validate_model_id(&request.model)?;
+    if request
+        .inputs
+        .iter()
+        .any(|input| input.input_role == "mask")
+    {
+        bail!("Gemini adapter does not support explicit image masks");
+    }
     let response_limit = image_response_limit(&request);
     let mut parts = Vec::with_capacity(request.inputs.len() + 1);
     for input in request.inputs {
@@ -1543,6 +1556,57 @@ mod tests {
                 .downcast_ref::<reqwest::Error>()
                 .is_some_and(reqwest::Error::is_timeout)
         }));
+    }
+
+    #[tokio::test]
+    async fn openai_edit_contract_sends_the_mask_in_its_dedicated_field() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = Router::new().fallback(any(|request: Request<Body>| async move {
+            assert_eq!(request.uri().path(), "/images/edits");
+            let body = to_bytes(request.into_body(), usize::MAX).await.unwrap();
+            let body = String::from_utf8(body.to_vec()).unwrap();
+            assert!(body.contains("name=\"image[]\""));
+            assert!(body.contains("name=\"mask\""));
+            Response::builder()
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "data": [{ "b64_json": "aW1hZ2U=" }] }).to_string(),
+                ))
+                .unwrap()
+        }));
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let images = create_images(
+            "openai-compatible",
+            "edit",
+            &Client::new(),
+            &format!("http://{address}"),
+            &SecretString::from("secret".to_owned()),
+            ProviderRequest {
+                model: "gpt-image-1".to_owned(),
+                prompt: "extend the image".to_owned(),
+                parameters: json!({ "size": "1024x1024" }),
+                inputs: vec![
+                    ProviderInput {
+                        filename: "source.png".to_owned(),
+                        mime_type: "image/png".to_owned(),
+                        bytes: Bytes::from_static(b"source"),
+                        input_role: "source".to_owned(),
+                    },
+                    ProviderInput {
+                        filename: "mask.png".to_owned(),
+                        mime_type: "image/png".to_owned(),
+                        bytes: Bytes::from_static(b"mask"),
+                        input_role: "mask".to_owned(),
+                    },
+                ],
+                max_image_bytes: 1024,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(images.len(), 1);
     }
 
     #[tokio::test]

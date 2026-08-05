@@ -221,7 +221,13 @@ pub struct NewEditorTaskRequest {
     pub provider_id: Uuid,
     pub model_id: Uuid,
     pub parameters: Value,
-    pub input_asset_ids: Vec<Uuid>,
+    pub inputs: Vec<NewEditorTaskInput>,
+    pub result_parent_asset_id: Uuid,
+}
+
+pub struct NewEditorTaskInput {
+    pub asset_id: Uuid,
+    pub input_role: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -473,13 +479,14 @@ pub async fn create_editor_task(
         Some(request.model_id),
     )
     .await?;
-    let input_asset_ids =
-        validate_explicit_assets(&mut tx, user_id, &request.input_asset_ids).await?;
-    if input_asset_ids.is_empty() {
-        return Err(AppError::Validation(
-            "editor image tasks require a source asset".to_owned(),
-        ));
-    }
+    validate_editor_task_inputs(&request.inputs)?;
+    let input_asset_ids = request
+        .inputs
+        .iter()
+        .map(|input| input.asset_id)
+        .collect::<Vec<_>>();
+    validate_explicit_assets(&mut tx, user_id, &input_asset_ids).await?;
+    validate_explicit_assets(&mut tx, user_id, &[request.result_parent_asset_id]).await?;
     validate_task_parameters(&request.parameters, &selection.parameter_schema, "edit")?;
     let prompt = if request.content.trim().is_empty() {
         "自然延展原图内容并保持主体、光线和风格连续。".to_owned()
@@ -500,6 +507,10 @@ pub async fn create_editor_task(
                     .collect(),
             ),
         );
+        values.insert(
+            "editor_parent_asset_id".to_owned(),
+            json!(request.result_parent_asset_id),
+        );
     }
     sqlx::query(
         r#"
@@ -519,7 +530,7 @@ pub async fn create_editor_task(
     .bind(trace_id)
     .execute(&mut *tx)
     .await?;
-    for (index, asset_id) in input_asset_ids.iter().enumerate() {
+    for (index, input) in request.inputs.iter().enumerate() {
         sqlx::query(
             r#"
             INSERT INTO task_input_images (task_id, asset_id, input_index, input_role)
@@ -527,9 +538,9 @@ pub async fn create_editor_task(
             "#,
         )
         .bind(task_id)
-        .bind(asset_id)
+        .bind(input.asset_id)
         .bind(index as i32)
-        .bind(if index == 0 { "source" } else { "reference" })
+        .bind(&input.input_role)
         .execute(&mut *tx)
         .await?;
     }
@@ -741,6 +752,7 @@ struct TaskInput {
     storage_container: String,
     storage_key: String,
     mime_type: String,
+    input_role: String,
 }
 
 async fn process_task(state: &AppState, task_id: Uuid) -> anyhow::Result<()> {
@@ -774,7 +786,8 @@ async fn process_task(state: &AppState, task_id: Uuid) -> anyhow::Result<()> {
     }
     let inputs = sqlx::query_as::<_, TaskInput>(
         r#"
-        SELECT a.id, a.storage_driver, a.storage_container, a.storage_key, a.mime_type
+        SELECT a.id, a.storage_driver, a.storage_container, a.storage_key, a.mime_type,
+               i.input_role
         FROM task_input_images i
         JOIN image_assets a ON a.id = i.asset_id
         WHERE i.task_id = $1
@@ -866,15 +879,16 @@ async fn process_task(state: &AppState, task_id: Uuid) -> anyhow::Result<()> {
                 return Err(error);
             }
         };
-        let persisted = if let (Some(edit_document_id), Some(parent_asset)) =
-            (task.edit_document_id, inputs.first())
-        {
+        let persisted = if let (Some(edit_document_id), Some(parent_asset_id)) = (
+            task.edit_document_id,
+            editor_result_parent_asset_id(&task, &inputs),
+        ) {
             images::persist_derived_asset(
                 state,
                 task.user_id,
                 None,
                 validated,
-                parent_asset.id,
+                parent_asset_id,
                 edit_document_id,
                 "ai_edited",
             )
@@ -1055,6 +1069,7 @@ async fn call_provider(
             filename: format!("{}{}", input.id, extension_for_mime(&input.mime_type)),
             mime_type: input.mime_type.clone(),
             bytes,
+            input_role: input.input_role.clone(),
         });
     }
     provider_adapters::create_images_with_partials(
@@ -1621,12 +1636,62 @@ fn normalize_result_size(
 }
 
 fn exact_size_target(task: &ProcessingTask) -> Option<(u32, u32)> {
+    if task.edit_document_id.is_some() {
+        return task
+            .request_params
+            .get("size")
+            .and_then(Value::as_str)
+            .and_then(parse_pixel_size);
+    }
     if task.provider_type != "openai-compatible"
         || !task.upstream_model_id.eq_ignore_ascii_case("gpt-image-2")
     {
         return None;
     }
     provider_adapters::effective_openai_dimensions(&task.request_params, &task.upstream_model_id)
+}
+
+fn parse_pixel_size(value: &str) -> Option<(u32, u32)> {
+    let (width, height) = value.split_once('x')?;
+    let width = width.parse().ok()?;
+    let height = height.parse().ok()?;
+    (width > 0 && height > 0).then_some((width, height))
+}
+
+fn editor_result_parent_asset_id(task: &ProcessingTask, inputs: &[TaskInput]) -> Option<Uuid> {
+    task.request_params
+        .get("editor_parent_asset_id")
+        .and_then(Value::as_str)
+        .and_then(|value| Uuid::parse_str(value).ok())
+        .or_else(|| {
+            inputs
+                .iter()
+                .find(|input| input.input_role == "source")
+                .map(|input| input.id)
+        })
+}
+
+fn validate_editor_task_inputs(inputs: &[NewEditorTaskInput]) -> AppResult<()> {
+    let source_count = inputs
+        .iter()
+        .filter(|input| input.input_role == "source")
+        .count();
+    let mask_count = inputs
+        .iter()
+        .filter(|input| input.input_role == "mask")
+        .count();
+    if inputs.len() != 2
+        || source_count != 1
+        || mask_count != 1
+        || inputs
+            .iter()
+            .any(|input| !matches!(input.input_role.as_str(), "source" | "mask"))
+    {
+        return Err(AppError::Validation(
+            "editor outpaint tasks require exactly one source and one mask asset".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 async fn compensate_asset(state: &AppState, owner_id: Uuid, asset_id: Uuid) {
@@ -2489,6 +2554,32 @@ mod tests {
     }
 
     #[test]
+    fn editor_outpaint_requires_one_source_and_one_mask() {
+        let source = NewEditorTaskInput {
+            asset_id: Uuid::new_v4(),
+            input_role: "source".to_owned(),
+        };
+        let mask = NewEditorTaskInput {
+            asset_id: Uuid::new_v4(),
+            input_role: "mask".to_owned(),
+        };
+        assert!(validate_editor_task_inputs(&[source, mask]).is_ok());
+        assert!(
+            validate_editor_task_inputs(&[
+                NewEditorTaskInput {
+                    asset_id: Uuid::new_v4(),
+                    input_role: "source".to_owned(),
+                },
+                NewEditorTaskInput {
+                    asset_id: Uuid::new_v4(),
+                    input_role: "reference".to_owned(),
+                },
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
     fn prompt_includes_context_and_style() {
         let prompt = build_prompt(
             &[("user".to_owned(), "画一只猫".to_owned())],
@@ -2683,6 +2774,12 @@ mod tests {
 
         task.request_params = json!({ "size": "auto" });
         assert_eq!(exact_size_target(&task), None);
+
+        task.edit_document_id = Some(Uuid::new_v4());
+        task.provider_type = "custom-openai-compatible".to_owned();
+        task.upstream_model_id = "custom-editor".to_owned();
+        task.request_params = json!({ "size": "1920x1080" });
+        assert_eq!(exact_size_target(&task), Some((1920, 1080)));
     }
 
     #[test]

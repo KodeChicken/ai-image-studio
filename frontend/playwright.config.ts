@@ -20,6 +20,10 @@ export default defineConfig({
         channel: process.platform === 'win32' ? 'msedge' : undefined,
       },
     },
+    ...(process.env.CI ? [{
+      name: 'webkit',
+      use: { ...devices['Desktop Safari'] },
+    }] : []),
   ],
   webServer: {
     command: 'pnpm exec vite --host 127.0.0.1 --port 4173',
