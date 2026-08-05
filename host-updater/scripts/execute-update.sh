@@ -185,7 +185,7 @@ cp -- "$RELEASE_ENV_FILE" "$BACKUP_DIR/previous-release.env"
 
 # shellcheck source=/dev/null
 source "$RELEASE_ENV_FILE"
-CURRENT_IMAGE=${APP_IMAGE:?APP_IMAGE missing from release environment}
+: "${APP_IMAGE:?APP_IMAGE missing from release environment}"
 CURRENT_RELEASE_IMAGE=${APP_RELEASE_IMAGE:-${APP_IMAGE_REFERENCE:?APP_IMAGE_REFERENCE missing from release environment}}
 CURRENT_VERSION=${APP_VERSION:?APP_VERSION missing from release environment}
 CURRENT_DIGEST=${APP_IMAGE_DIGEST:?APP_IMAGE_DIGEST missing from release environment}
