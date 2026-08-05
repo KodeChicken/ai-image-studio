@@ -202,6 +202,24 @@ describe('ImageCropModal', () => {
     wrapper.unmount()
   })
 
+  it('keeps an invalid dimension visible after editing finishes', async () => {
+    const { wrapper, instance } = await mountCropper()
+    const widthInput = wrapper.get<HTMLInputElement>('input[aria-label="裁剪宽度"]')
+    await widthInput.trigger('focus')
+    instance.setData.mockClear()
+
+    await widthInput.setValue('2048')
+    await widthInput.trigger('blur')
+
+    expect(instance.setData).not.toHaveBeenCalled()
+    expect(widthInput.element.value).toBe('2048')
+    expect(wrapper.get('.image-crop-size-error').isVisible()).toBe(true)
+    const exportButton = wrapper.findAll('button').find((button) => button.text() === '导出成品')
+    expect(exportButton!.attributes('disabled')).toBeDefined()
+
+    wrapper.unmount()
+  })
+
   it('exports the original crop without passing resize dimensions', async () => {
     const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined)
     vi.stubGlobal('URL', {

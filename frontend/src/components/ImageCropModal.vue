@@ -159,11 +159,8 @@ function updateCropDimension(edge: 'width' | 'height', event: Event) {
   }
 }
 
-function commitCropDimension(edge: 'width' | 'height') {
+function finishDimensionEdit(edge: 'width' | 'height') {
   if (editingEdge.value === edge) editingEdge.value = null
-  if (!cropper) return
-  const cropData = cropper.getData(true)
-  syncCropDimensions(cropData.width, cropData.height)
 }
 
 function blurDimensionInput(event: KeyboardEvent) {
@@ -278,8 +275,8 @@ function downloadBlob(blob: Blob, filename: string) {
         <aside class="image-crop-controls">
           <strong>裁剪尺寸（原图像素）</strong>
           <div class="image-crop-size-fields">
-            <label>裁剪宽度<input :value="cropWidthDraft" type="text" inputmode="numeric" pattern="[0-9]*" aria-label="裁剪宽度" @focus="selectDimension('width', $event)" @input="updateCropDimension('width', $event)" @blur="commitCropDimension('width')" @keydown.enter.prevent="blurDimensionInput" /></label>
-            <label>裁剪高度<input :value="cropHeightDraft" type="text" inputmode="numeric" pattern="[0-9]*" aria-label="裁剪高度" @focus="selectDimension('height', $event)" @input="updateCropDimension('height', $event)" @blur="commitCropDimension('height')" @keydown.enter.prevent="blurDimensionInput" /></label>
+            <label>裁剪宽度<input :value="cropWidthDraft" type="text" inputmode="numeric" pattern="[0-9]*" aria-label="裁剪宽度" @focus="selectDimension('width', $event)" @input="updateCropDimension('width', $event)" @blur="finishDimensionEdit('width')" @keydown.enter.prevent="blurDimensionInput" /></label>
+            <label>裁剪高度<input :value="cropHeightDraft" type="text" inputmode="numeric" pattern="[0-9]*" aria-label="裁剪高度" @focus="selectDimension('height', $event)" @input="updateCropDimension('height', $event)" @blur="finishDimensionEdit('height')" @keydown.enter.prevent="blurDimensionInput" /></label>
           </div>
           <small v-if="sourceWidth && sourceHeight">当前选区直接截取原图，不会缩放或拉伸。</small>
           <small v-if="sourceWidth && sourceHeight && !validCrop" class="image-crop-size-error">宽高需为 16-8192 的整数、不能超过原图 {{ sourceWidth }} × {{ sourceHeight }}，且总像素不能超过 3355 万。</small>
