@@ -4,7 +4,7 @@ use axum::{
     Json, Router,
     body::Body,
     extract::{Multipart, Path, State},
-    http::{HeaderValue, StatusCode, header},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -47,6 +47,8 @@ pub(crate) struct StoredAssetRow {
     pub storage_container: String,
     pub storage_key: String,
     pub mime_type: String,
+    pub file_size_bytes: i64,
+    pub sha256: String,
 }
 
 #[derive(Debug, FromRow)]
@@ -103,12 +105,20 @@ async fn content(
     State(state): State<AppState>,
     current: CurrentUser,
     Path(asset_id): Path<Uuid>,
+    request_headers: HeaderMap,
 ) -> AppResult<Response> {
     current.require_password_changed()?;
     let asset = load_owned_asset(&state, current.id, asset_id).await?;
-    let bytes = state
+    let etag = HeaderValue::from_str(&format!("\"{}\"", asset.sha256))
+        .map_err(|error| AppError::Internal(error.into()))?;
+    if request_headers.get(header::IF_NONE_MATCH) == Some(&etag) {
+        let mut response = StatusCode::NOT_MODIFIED.into_response();
+        set_content_cache_headers(response.headers_mut(), etag);
+        return Ok(response);
+    }
+    let stream = state
         .storage
-        .get(
+        .stream(
             &asset.storage_driver,
             &asset.storage_container,
             &asset.storage_key,
@@ -118,17 +128,27 @@ async fn content(
             tracing::error!(asset_id = %asset_id, error = %error, "failed to read image asset");
             AppError::NotFound
         })?;
-    let mut response = Body::from(bytes).into_response();
+    let mut response = Body::from_stream(stream).into_response();
     response.headers_mut().insert(
         header::CONTENT_TYPE,
         HeaderValue::from_str(&asset.mime_type)
             .map_err(|error| AppError::Internal(error.into()))?,
     );
     response.headers_mut().insert(
+        header::CONTENT_LENGTH,
+        HeaderValue::from_str(&asset.file_size_bytes.to_string())
+            .map_err(|error| AppError::Internal(error.into()))?,
+    );
+    set_content_cache_headers(response.headers_mut(), etag);
+    Ok(response)
+}
+
+fn set_content_cache_headers(headers: &mut HeaderMap, etag: HeaderValue) {
+    headers.insert(
         header::CACHE_CONTROL,
         HeaderValue::from_static("private, max-age=3600"),
     );
-    Ok(response)
+    headers.insert(header::ETAG, etag);
 }
 
 async fn remove(
@@ -166,7 +186,7 @@ pub(crate) async fn load_owned_asset(
 ) -> AppResult<StoredAssetRow> {
     sqlx::query_as::<_, StoredAssetRow>(
         r#"
-        SELECT storage_driver, storage_container, storage_key, mime_type
+        SELECT storage_driver, storage_container, storage_key, mime_type, file_size_bytes, sha256
         FROM image_assets
         WHERE id = $1 AND owner_id = $2
         "#,

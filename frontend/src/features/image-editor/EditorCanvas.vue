@@ -22,6 +22,7 @@ const emit = defineEmits<{
 const container = ref<HTMLDivElement | null>(null)
 const stageHost = ref<HTMLDivElement | null>(null)
 const loadingImage = ref(true)
+const imageError = ref('')
 let stage: Konva.Stage | null = null
 let layer: Konva.Layer | null = null
 let sourceImage: HTMLImageElement | null = null
@@ -32,6 +33,8 @@ let panY = 0
 let panning = false
 let panPointer = { x: 0, y: 0 }
 let renderFrame = 0
+let imageLoadTimer: number | null = null
+let imageLoadVersion = 0
 
 onMounted(() => {
   if (!container.value || !stageHost.value) return
@@ -49,6 +52,8 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  imageLoadVersion += 1
+  clearImageLoadTimer()
   cancelAnimationFrame(renderFrame)
   observer?.disconnect()
   sourceImage = null
@@ -63,19 +68,46 @@ watch(
 )
 
 function loadImage() {
+  const loadVersion = ++imageLoadVersion
+  clearImageLoadTimer()
   loadingImage.value = true
+  imageError.value = ''
   sourceImage = null
+  if (!props.imageUrl) {
+    loadingImage.value = false
+    imageError.value = '原图地址无效'
+    return
+  }
   const image = new Image()
   image.onload = () => {
+    if (loadVersion !== imageLoadVersion) return
+    clearImageLoadTimer()
     sourceImage = image
     loadingImage.value = false
     scheduleRender()
   }
   image.onerror = () => {
+    if (loadVersion !== imageLoadVersion) return
+    clearImageLoadTimer()
     loadingImage.value = false
+    imageError.value = '原图加载失败，请检查网络后重试'
     scheduleRender()
   }
   image.src = props.imageUrl
+  imageLoadTimer = window.setTimeout(() => {
+    if (loadVersion !== imageLoadVersion) return
+    image.onload = null
+    image.onerror = null
+    image.src = ''
+    loadingImage.value = false
+    imageError.value = '原图加载超时，请重试'
+    scheduleRender()
+  }, 60_000)
+}
+
+function clearImageLoadTimer() {
+  if (imageLoadTimer !== null) window.clearTimeout(imageLoadTimer)
+  imageLoadTimer = null
 }
 
 function resizeStage() {
@@ -409,7 +441,10 @@ defineExpose({ fitViewport })
   <div ref="container" class="editor-canvas" :class="{ loading: loadingImage }">
     <div ref="stageHost" class="editor-canvas-stage" aria-hidden="true"></div>
     <div v-if="loadingImage" class="editor-canvas-loading">正在读取原始清晰图片…</div>
-    <div v-else-if="!sourceImage" class="editor-canvas-loading error">原图加载失败</div>
+    <div v-else-if="!sourceImage" class="editor-canvas-loading error" role="alert">
+      <span>{{ imageError || '原图加载失败' }}</span>
+      <button type="button" @click="loadImage">重新加载</button>
+    </div>
     <div class="editor-canvas-tip">滚轮缩放 · Alt/中键拖动画布</div>
   </div>
 </template>
@@ -442,7 +477,8 @@ defineExpose({ fitViewport })
   backdrop-filter: blur(6px);
 }
 .editor-canvas-stage { position: absolute; inset: 0; }
-.editor-canvas-loading.error { color: #fca5a5; }
+.editor-canvas-loading.error { align-content: center; justify-items: center; gap: 12px; color: #fca5a5; }
+.editor-canvas-loading.error button { padding: 7px 12px; border: 1px solid #ffffff24; border-radius: 8px; cursor: pointer; color: #fff; background: #7c3aed; }
 .editor-canvas-tip {
   position: absolute;
   z-index: 1;

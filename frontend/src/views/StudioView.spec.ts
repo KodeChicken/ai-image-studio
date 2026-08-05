@@ -46,12 +46,14 @@ const conversation = {
 describe('StudioView', () => {
   let completeStream: (() => void) | undefined
   let conversationResponse: Array<typeof conversation>
+  let conversationMessages: Array<Record<string, unknown>>
 
   beforeEach(() => {
     apiMock.mockReset()
     streamPostMock.mockReset()
     completeStream = undefined
     conversationResponse = [conversation]
+    conversationMessages = []
     localStorage.clear()
     Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
       configurable: true,
@@ -67,7 +69,7 @@ describe('StudioView', () => {
       if (path.startsWith('/api/v1/conversations/')) {
         const id = path.slice('/api/v1/conversations/'.length)
         const selected = conversationResponse.find((item) => item.id === id)
-        if (selected) return { ...selected, messages: [] }
+        if (selected) return { ...selected, messages: conversationMessages }
       }
       if (path === '/api/v1/providers') {
         return [{
@@ -169,6 +171,49 @@ describe('StudioView', () => {
       '测试会话',
     ])
 
+    wrapper.unmount()
+  })
+
+  it('reserves generated image space and keeps the timeline at the bottom after loading', async () => {
+    conversationMessages = [{
+      id: 'assistant-message-1',
+      conversationId: conversation.id,
+      parentMessageId: null,
+      role: 'assistant',
+      status: 'completed',
+      sequenceNo: 1,
+      content: '生成完成',
+      metadata: {},
+      taskId: null,
+      taskErrorCode: null,
+      taskErrorMessage: null,
+      taskRetryCount: null,
+      taskStartedAt: null,
+      taskFinishedAt: timestamp,
+      assets: [{
+        id: 'asset-4k',
+        contentUrl: '/api/v1/image-assets/asset-4k/content',
+        mimeType: 'image/png',
+        width: 3840,
+        height: 2160,
+        fileSizeBytes: 10_000_000,
+        relationType: 'generated',
+      }],
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    }]
+    const wrapper = shallowMount(StudioView)
+    await flushPromises()
+    const image = wrapper.get('img[alt="生成图片 asset-4k"]')
+
+    expect(image.attributes('width')).toBe('3840')
+    expect(image.attributes('height')).toBe('2160')
+    const scrollTo = vi.mocked(HTMLElement.prototype.scrollTo)
+    scrollTo.mockClear()
+    await image.trigger('load')
+    await flushPromises()
+
+    expect(scrollTo).toHaveBeenCalledWith({ top: 0, behavior: 'auto' })
     wrapper.unmount()
   })
 

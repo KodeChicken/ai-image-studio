@@ -1,5 +1,7 @@
 use std::{
+    io,
     path::{Component, Path, PathBuf},
+    pin::Pin,
     sync::Arc,
 };
 
@@ -7,10 +9,11 @@ use anyhow::{Context, bail};
 use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
-use futures_util::TryStreamExt;
+use futures_util::{Stream, TryStreamExt};
 use object_store::{ObjectStore, ObjectStoreExt, aws::AmazonS3Builder, path::Path as ObjectPath};
 use secrecy::ExposeSecret;
 use tokio::io::AsyncWriteExt;
+use tokio_util::io::ReaderStream;
 
 use crate::{Settings, config::StorageDriver};
 
@@ -29,10 +32,13 @@ pub struct StoredObjectInfo {
     pub last_modified: DateTime<Utc>,
 }
 
+pub type StorageStream = Pin<Box<dyn Stream<Item = Result<Bytes, io::Error>> + Send + 'static>>;
+
 #[async_trait]
 trait ImageStorage: Send + Sync {
     async fn put(&self, key: &str, bytes: Bytes) -> anyhow::Result<StoredObject>;
     async fn get(&self, container: &str, key: &str) -> anyhow::Result<Bytes>;
+    async fn stream(&self, container: &str, key: &str) -> anyhow::Result<StorageStream>;
     async fn exists(&self, container: &str, key: &str) -> anyhow::Result<bool>;
     async fn delete(&self, container: &str, key: &str) -> anyhow::Result<()>;
     async fn list(&self) -> anyhow::Result<Vec<StoredObjectInfo>>;
@@ -83,6 +89,25 @@ impl StorageRegistry {
                     .as_ref()
                     .context("S3 storage is not configured")?
                     .get(container, key)
+                    .await
+            }
+            _ => bail!("unsupported storage driver"),
+        }
+    }
+
+    pub async fn stream(
+        &self,
+        driver: &str,
+        container: &str,
+        key: &str,
+    ) -> anyhow::Result<StorageStream> {
+        match driver {
+            "local" => self.local.stream(container, key).await,
+            "s3" => {
+                self.s3
+                    .as_ref()
+                    .context("S3 storage is not configured")?
+                    .stream(container, key)
                     .await
             }
             _ => bail!("unsupported storage driver"),
@@ -195,6 +220,11 @@ impl ImageStorage for LocalStorage {
 
     async fn get(&self, _container: &str, key: &str) -> anyhow::Result<Bytes> {
         Ok(Bytes::from(tokio::fs::read(self.resolve(key)?).await?))
+    }
+
+    async fn stream(&self, _container: &str, key: &str) -> anyhow::Result<StorageStream> {
+        let file = tokio::fs::File::open(self.resolve(key)?).await?;
+        Ok(Box::pin(ReaderStream::new(file)))
     }
 
     async fn exists(&self, _container: &str, key: &str) -> anyhow::Result<bool> {
@@ -337,6 +367,18 @@ impl ImageStorage for S3Storage {
             .await?)
     }
 
+    async fn stream(&self, container: &str, key: &str) -> anyhow::Result<StorageStream> {
+        if container != self.bucket {
+            bail!("asset belongs to an unconfigured S3 bucket");
+        }
+        let result = self.store.get(&self.object_path(key)?).await?;
+        Ok(Box::pin(
+            result
+                .into_stream()
+                .map_err(|error| io::Error::other(error.to_string())),
+        ))
+    }
+
     async fn exists(&self, container: &str, key: &str) -> anyhow::Result<bool> {
         if container != self.bucket {
             return Ok(false);
@@ -404,6 +446,15 @@ mod tests {
             storage.get("default", &stored.key).await.unwrap(),
             b"image"[..]
         );
+        let streamed = storage
+            .stream("default", &stored.key)
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap()
+            .concat();
+        assert_eq!(streamed, b"image");
         assert!(storage.exists("default", &stored.key).await.unwrap());
         storage.delete("default", &stored.key).await.unwrap();
         assert!(!storage.exists("default", &stored.key).await.unwrap());

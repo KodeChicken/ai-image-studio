@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import { NButton, NInput, NInputNumber, NModal, NSelect, NSwitch, useMessage } from 'naive-ui'
 import { api, streamPost, streamTask } from '@/api/client'
@@ -75,6 +75,7 @@ const messageTimeFormatter = new Intl.DateTimeFormat('zh-CN', {
 const editingTitle = ref<string | null>(null)
 const titleDraft = ref('')
 const timeline = ref<HTMLElement | null>(null)
+let followTimelineBottom = true
 const composerInput = ref<HTMLTextAreaElement | null>(null)
 const activeLeafId = ref<string | null>(null)
 const composerParentId = ref<string | null>(null)
@@ -198,9 +199,7 @@ watch(parameterPanelWidth, (value) => {
 }, { immediate: true })
 
 onMounted(async () => {
-  window.addEventListener('resize', updateParameterPanelBounds)
-  window.addEventListener('keydown', closeMobilePanelOnEscape)
-  updateParameterPanelBounds()
+  activateStudio()
   await Promise.all([loadConversations(), loadProviders(), loadModels(), loadTemplates()])
   if (!providerId.value) providerId.value = providers.value[0]?.id ?? null
   const rememberedConversationId = readActiveConversation()
@@ -209,14 +208,28 @@ onMounted(async () => {
   if (initialConversation) await selectConversation(initialConversation.id)
 })
 
+onActivated(activateStudio)
+onDeactivated(deactivateStudio)
+
 onBeforeUnmount(() => {
   for (const conversationId of taskTimers.keys()) stopTaskTimer(conversationId)
-  stopParameterResize?.()
   files.value.forEach((attachment) => URL.revokeObjectURL(attachment.previewUrl))
+  deactivateStudio()
+})
+
+function activateStudio() {
+  window.addEventListener('resize', updateParameterPanelBounds)
+  window.addEventListener('keydown', closeMobilePanelOnEscape)
+  updateParameterPanelBounds()
+  document.documentElement.style.setProperty('--studio-parameter-panel-width', `${parameterPanelWidth.value}px`)
+}
+
+function deactivateStudio() {
+  stopParameterResize?.()
   window.removeEventListener('resize', updateParameterPanelBounds)
   window.removeEventListener('keydown', closeMobilePanelOnEscape)
   document.documentElement.style.removeProperty('--studio-parameter-panel-width')
-})
+}
 
 function taskStateFor(conversationId: string) {
   if (!conversationTaskStates[conversationId]) {
@@ -930,7 +943,18 @@ async function saveTemplate() {
 
 async function scrollBottom() {
   await nextTick()
-  timeline.value?.scrollTo({ top: timeline.value.scrollHeight, behavior: 'smooth' })
+  followTimelineBottom = true
+  timeline.value?.scrollTo({ top: timeline.value.scrollHeight, behavior: 'auto' })
+}
+
+function handleTimelineScroll() {
+  const element = timeline.value
+  if (!element) return
+  followTimelineBottom = element.scrollHeight - element.scrollTop - element.clientHeight <= 80
+}
+
+function handleTimelineImageLoad() {
+  if (followTimelineBottom) void scrollBottom()
 }
 </script>
 
@@ -1002,7 +1026,7 @@ async function scrollBottom() {
           >{{ cancelling ? '取消中' : '取消生成' }}</button>
         </div>
       </header>
-      <div ref="timeline" class="message-timeline">
+      <div ref="timeline" class="message-timeline" @scroll="handleTimelineScroll">
         <div v-if="!visibleMessages.length && !visiblePendingUserMessage" class="studio-empty">
           <div class="empty-art">✦</div>
           <h2>描述你脑海中的画面</h2>
@@ -1033,7 +1057,13 @@ async function scrollBottom() {
                   :aria-label="`放大${messageImageLabel(item)}`"
                   @click="openImagePreview(asset, messageImageLabel(item))"
                 >
-                  <img :src="asset.contentUrl" :alt="`${messageImageLabel(item)} ${asset.id}`" />
+                  <img
+                    :src="asset.contentUrl"
+                    :alt="`${messageImageLabel(item)} ${asset.id}`"
+                    :width="asset.width || undefined"
+                    :height="asset.height || undefined"
+                    @load="handleTimelineImageLoad"
+                  />
                 </button>
                 <figcaption class="message-image-meta">
                   <span>{{ asset.width }} × {{ asset.height }} · {{ asset.mimeType }}</span>
@@ -1102,7 +1132,7 @@ async function scrollBottom() {
                   :aria-label="`放大参考图 ${attachment.name}`"
                   @click="openPendingAttachmentPreview(attachment)"
                 >
-                  <img :src="attachment.previewUrl" :alt="`参考图 ${attachment.name}`" />
+                  <img :src="attachment.previewUrl" :alt="`参考图 ${attachment.name}`" @load="handleTimelineImageLoad" />
                 </button>
                 <figcaption class="message-image-meta">{{ attachment.name }} · {{ attachment.mimeType }}</figcaption>
               </figure>
@@ -1123,7 +1153,7 @@ async function scrollBottom() {
                 :aria-label="`放大${partialPreview.label}`"
                 @click="openPartialPreview(partialPreview.contentUrl, partialPreview.label)"
               >
-                <img :src="partialPreview.contentUrl" :alt="partialPreview.label" />
+                <img :src="partialPreview.contentUrl" :alt="partialPreview.label" @load="handleTimelineImageLoad" />
                 <span>{{ partialPreview.label }} · 最终原图仍在生成</span>
               </button>
             </div>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { NButton, NInput, NModal, NSelect, useDialog, useMessage } from 'naive-ui'
 import { useAuthStore } from '@/stores/auth'
@@ -48,14 +48,25 @@ watch(() => route.fullPath, () => {
 })
 
 onMounted(() => {
-  document.addEventListener('pointerdown', closeAccountOutside)
-  document.addEventListener('keydown', closeAccountOnEscape)
+  activateLayout()
 })
 
+onActivated(activateLayout)
+onDeactivated(deactivateLayout)
+
 onBeforeUnmount(() => {
+  deactivateLayout()
+})
+
+function activateLayout() {
+  document.addEventListener('pointerdown', closeAccountOutside)
+  document.addEventListener('keydown', closeAccountOnEscape)
+}
+
+function deactivateLayout() {
   document.removeEventListener('pointerdown', closeAccountOutside)
   document.removeEventListener('keydown', closeAccountOnEscape)
-})
+}
 
 function closeAccountOutside(event: PointerEvent) {
   if (accountOpen.value && !accountWrap.value?.contains(event.target as Node)) accountOpen.value = false

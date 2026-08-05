@@ -2,8 +2,10 @@
 import { computed } from 'vue'
 import type { GlobalThemeOverrides } from 'naive-ui'
 import { darkTheme, NConfigProvider, NDialogProvider, NMessageProvider } from 'naive-ui'
+import { useAuthStore } from '@/stores/auth'
 import { useThemeStore } from '@/stores/theme'
 
+const auth = useAuthStore()
 const theme = useThemeStore()
 theme.initialize()
 const naiveTheme = computed(() => (theme.resolved === 'dark' ? darkTheme : null))
@@ -49,7 +51,14 @@ const themeOverrides: GlobalThemeOverrides = {
   <n-config-provider :theme="naiveTheme" :theme-overrides="themeOverrides">
     <n-dialog-provider>
       <n-message-provider>
-        <router-view />
+        <router-view v-slot="{ Component, route }">
+          <keep-alive include="DefaultLayout" :max="1">
+            <component
+              :is="Component"
+              :key="route.name === 'image-editor' ? route.fullPath : auth.user?.id ?? route.fullPath"
+            />
+          </keep-alive>
+        </router-view>
       </n-message-provider>
     </n-dialog-provider>
   </n-config-provider>
