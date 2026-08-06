@@ -47,6 +47,9 @@ const conversation = {
 
 describe('StudioView', () => {
   let completeStream: (() => void) | undefined
+  let emitStreamEvent: ((event: { type: string; data: Record<string, unknown> }) => void) | undefined
+  let holdConversationListReload: boolean
+  let releaseConversationListReload: (() => void) | undefined
   let conversationResponse: Array<typeof conversation>
   let conversationMessages: Array<Record<string, unknown>>
 
@@ -55,6 +58,9 @@ describe('StudioView', () => {
     streamPostMock.mockReset()
     dialogWarningMock.mockReset()
     completeStream = undefined
+    emitStreamEvent = undefined
+    holdConversationListReload = false
+    releaseConversationListReload = undefined
     conversationResponse = [conversation]
     conversationMessages = []
     localStorage.clear()
@@ -68,7 +74,14 @@ describe('StudioView', () => {
       revokeObjectURL: vi.fn(),
     })
     apiMock.mockImplementation(async (path: string, init: RequestInit = {}) => {
-      if (path === '/api/v1/conversations') return conversationResponse
+      if (path === '/api/v1/conversations') {
+        if (holdConversationListReload) {
+          return new Promise<Array<typeof conversation>>((resolve) => {
+            releaseConversationListReload = () => resolve(conversationResponse)
+          })
+        }
+        return conversationResponse
+      }
       if (path.startsWith('/api/v1/conversations/') && init.method === 'DELETE') return undefined
       if (path.startsWith('/api/v1/conversations/')) {
         const id = path.slice('/api/v1/conversations/'.length)
@@ -124,8 +137,13 @@ describe('StudioView', () => {
       }
       throw new Error(`Unexpected API request: ${path}`)
     })
-    streamPostMock.mockImplementation(() => new Promise<void>((resolve) => {
+    streamPostMock.mockImplementation((
+      _path: string,
+      _body: Record<string, unknown>,
+      onEvent: (event: { type: string; data: Record<string, unknown> }) => void,
+    ) => new Promise<void>((resolve) => {
       completeStream = resolve
+      emitStreamEvent = onEvent
     }))
   })
 
@@ -247,6 +265,33 @@ describe('StudioView', () => {
     expect(apiMock).toHaveBeenCalledWith('/api/v1/conversations/conversation-1', { method: 'DELETE' })
     expect(wrapper.findAll('.conversation-item strong').map((item) => item.text())).toEqual(['保留会话'])
     expect(wrapper.get('.studio-header h1').text()).toBe('保留会话')
+    wrapper.unmount()
+  })
+
+  it('shows the first prompt title as soon as the task is created', async () => {
+    conversationResponse = [{ ...conversation, title: '新会话' }]
+    const wrapper = shallowMount(StudioView)
+    await flushPromises()
+    await wrapper.get('textarea').setValue('生成一张夏日海边宣传海报')
+    await wrapper.get('.send-button').trigger('click')
+    await flushPromises()
+    holdConversationListReload = true
+
+    emitStreamEvent?.({
+      type: 'task.created',
+      data: {
+        taskId: 'task-1',
+        conversationTitle: '生成一张夏日海边宣传海报',
+      },
+    })
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.get('.conversation-item strong').text()).toBe('生成一张夏日海边宣传海报')
+    conversationResponse = [{ ...conversation, title: '生成一张夏日海边宣传海报' }]
+    holdConversationListReload = false
+    releaseConversationListReload?.()
+    completeStream?.()
+    await flushPromises()
     wrapper.unmount()
   })
 

@@ -307,8 +307,26 @@ pub async fn create_task(
     .bind(request.conversation_id)
     .fetch_one(&mut *tx)
     .await?;
-    let generated_title =
-        generated_title_for_first_prompt(&conversation.title, sequence, &request.content);
+    let stored_first_prompt = if sequence == 1 {
+        None
+    } else {
+        sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT content
+            FROM conversation_messages
+            WHERE conversation_id = $1 AND role = 'user' AND content IS NOT NULL
+            ORDER BY sequence_no ASC
+            LIMIT 1
+            "#,
+        )
+        .bind(request.conversation_id)
+        .fetch_optional(&mut *tx)
+        .await?
+    };
+    let generated_title = generated_title_for_first_prompt(
+        &conversation.title,
+        stored_first_prompt.as_deref().unwrap_or(&request.content),
+    );
     let user_message_id = Uuid::new_v4();
     let assistant_message_id = Uuid::new_v4();
     sqlx::query(
@@ -426,7 +444,7 @@ pub async fn create_task(
     )
     .bind(selection.provider_id)
     .bind(selection.model_id)
-    .bind(generated_title)
+    .bind(generated_title.as_deref())
     .bind(request.conversation_id)
     .execute(&mut *tx)
     .await?;
@@ -439,7 +457,8 @@ pub async fn create_task(
         json!({
             "taskId": task_id,
             "conversationId": request.conversation_id,
-            "messageId": assistant_message_id
+            "messageId": assistant_message_id,
+            "conversationTitle": generated_title
         }),
     )
     .await?;
@@ -575,12 +594,8 @@ fn conversation_title_from_prompt(content: &str) -> String {
     }
 }
 
-fn generated_title_for_first_prompt(
-    current_title: &str,
-    sequence: i64,
-    content: &str,
-) -> Option<String> {
-    (sequence == 1 && matches!(current_title, "新会话" | "新生图会话"))
+fn generated_title_for_first_prompt(current_title: &str, content: &str) -> Option<String> {
+    matches!(current_title, "新会话" | "新生图会话")
         .then(|| conversation_title_from_prompt(content))
 }
 
@@ -2523,16 +2538,16 @@ mod tests {
             format!("{}…", "图".repeat(30))
         );
         assert_eq!(
-            generated_title_for_first_prompt("新会话", 1, "生成森林海报"),
+            generated_title_for_first_prompt("新会话", "生成森林海报"),
             Some("生成森林海报".to_owned())
         );
         assert_eq!(
-            generated_title_for_first_prompt("手动标题", 1, "生成森林海报"),
+            generated_title_for_first_prompt("手动标题", "生成森林海报"),
             None
         );
         assert_eq!(
-            generated_title_for_first_prompt("新会话", 3, "继续修改海报"),
-            None
+            generated_title_for_first_prompt("新生图会话", "首个提问"),
+            Some("首个提问".to_owned())
         );
     }
 

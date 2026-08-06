@@ -697,6 +697,13 @@ function handleTaskEvent(conversationId: string, state: ConversationTaskState, e
   if (event.type === 'task.created') {
     state.taskStage = '等待生成资源'
     if (typeof event.data.taskId === 'string') state.activeTaskId = event.data.taskId
+    if (typeof event.data.conversationTitle === 'string' && event.data.conversationTitle.trim()) {
+      const summary = conversations.value.find((item) => item.id === conversationId)
+      if (summary) summary.title = event.data.conversationTitle
+      if (activeConversation.value?.id === conversationId) {
+        activeConversation.value.title = event.data.conversationTitle
+      }
+    }
     void loadConversations().catch(() => undefined)
   }
   if (event.type === 'task.progress') {
