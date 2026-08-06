@@ -7,6 +7,7 @@ import StudioView from './StudioView.vue'
 
 const apiMock = vi.hoisted(() => vi.fn())
 const streamPostMock = vi.hoisted(() => vi.fn())
+const dialogWarningMock = vi.hoisted(() => vi.fn())
 
 vi.mock('@/api/client', () => ({
   api: apiMock,
@@ -27,6 +28,7 @@ vi.mock('naive-ui', async () => {
       success: vi.fn(),
       warning: vi.fn(),
     }),
+    useDialog: () => ({ warning: dialogWarningMock }),
   }
 })
 
@@ -51,6 +53,7 @@ describe('StudioView', () => {
   beforeEach(() => {
     apiMock.mockReset()
     streamPostMock.mockReset()
+    dialogWarningMock.mockReset()
     completeStream = undefined
     conversationResponse = [conversation]
     conversationMessages = []
@@ -64,8 +67,9 @@ describe('StudioView', () => {
       createObjectURL: vi.fn(() => 'blob:reference-preview'),
       revokeObjectURL: vi.fn(),
     })
-    apiMock.mockImplementation(async (path: string) => {
+    apiMock.mockImplementation(async (path: string, init: RequestInit = {}) => {
       if (path === '/api/v1/conversations') return conversationResponse
+      if (path.startsWith('/api/v1/conversations/') && init.method === 'DELETE') return undefined
       if (path.startsWith('/api/v1/conversations/')) {
         const id = path.slice('/api/v1/conversations/'.length)
         const selected = conversationResponse.find((item) => item.id === id)
@@ -214,6 +218,35 @@ describe('StudioView', () => {
     await flushPromises()
 
     expect(scrollTo).toHaveBeenCalledWith({ top: 0, behavior: 'auto' })
+    wrapper.unmount()
+  })
+
+  it('deletes the active conversation after confirmation and selects the next one', async () => {
+    conversationResponse = [
+      conversation,
+      {
+        ...conversation,
+        id: 'conversation-2',
+        title: '保留会话',
+        lastMessageAt: '2026-07-29T09:00:00.000Z',
+        createdAt: '2026-07-29T08:00:00.000Z',
+        updatedAt: '2026-07-29T09:00:00.000Z',
+      },
+    ]
+    const wrapper = shallowMount(StudioView)
+    await flushPromises()
+
+    await wrapper.get('button[aria-label="删除会话 测试会话"]').trigger('click')
+    expect(dialogWarningMock).toHaveBeenCalledTimes(1)
+    const confirmation = dialogWarningMock.mock.calls[0]![0] as {
+      onPositiveClick: () => Promise<void>
+    }
+    await confirmation.onPositiveClick()
+    await flushPromises()
+
+    expect(apiMock).toHaveBeenCalledWith('/api/v1/conversations/conversation-1', { method: 'DELETE' })
+    expect(wrapper.findAll('.conversation-item strong').map((item) => item.text())).toEqual(['保留会话'])
+    expect(wrapper.get('.studio-header h1').text()).toBe('保留会话')
     wrapper.unmount()
   })
 

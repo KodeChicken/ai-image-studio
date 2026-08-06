@@ -122,15 +122,20 @@ body.parameter-panel-resizing * { cursor: col-resize !important; }
 .icon-button { width: 36px; height: 36px; border: 0; border-radius: 11px; cursor: pointer; color: white; background: var(--brand); font-size: 22px; }
 .conversation-rail > .n-input { width: calc(100% - 36px); margin: 0 18px 12px; }
 .conversation-list { flex: 1; min-height: 0; overflow-y: auto; padding: 6px 10px 22px; }
-.conversation-item { display: grid; grid-template-columns: minmax(0, 1fr) 26px; align-items: center; gap: 7px; padding: 12px 9px; border: 1px solid transparent; border-radius: 12px; cursor: pointer; }
+.conversation-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 7px; padding: 12px 9px; border: 1px solid transparent; border-radius: 12px; cursor: pointer; }
 .conversation-item:hover { background: var(--panel-2); }
 .conversation-item.active { border-color: rgba(124,58,237,.25); background: var(--brand-soft); }
 .conversation-copy { display: grid; min-width: 0; gap: 5px; }
 .conversation-copy strong { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .conversation-copy small { color: var(--muted); font-size: 10px; }
 .conversation-generating { color: var(--brand); font-weight: 700; }
-.edit-title { opacity: 0; border: 0; cursor: pointer; background: transparent; color: var(--muted); }
-.conversation-item:hover .edit-title { opacity: 1; }
+.conversation-actions { display: flex; align-items: center; gap: 1px; }
+.conversation-action { width: 25px; height: 25px; opacity: 0; border: 0; border-radius: 6px; cursor: pointer; background: transparent; color: var(--muted); font-size: 11px; }
+.conversation-item:hover .conversation-action, .conversation-item.active .conversation-action, .conversation-item:focus-within .conversation-action { opacity: 1; }
+.conversation-action:hover { background: var(--panel); color: var(--text); }
+.delete-conversation:hover { color: var(--danger); }
+.conversation-action:disabled { cursor: wait; opacity: .55; }
+.title-editor { grid-column: 1 / -1; }
 .title-editor input { width: 100%; border: 1px solid var(--brand); border-radius: 6px; outline: none; padding: 5px; background: var(--panel); color: var(--text); }
 .empty-compact { padding: 30px 14px; text-align: center; color: var(--muted); font-size: 12px; }
 .studio-main { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-width: 0; min-height: 0; background: var(--bg); }

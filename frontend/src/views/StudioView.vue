@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
-import { NButton, NInput, NInputNumber, NModal, NSelect, NSwitch, useMessage } from 'naive-ui'
+import { NButton, NInput, NInputNumber, NModal, NSelect, NSwitch, useDialog, useMessage } from 'naive-ui'
 import { api, streamPost, streamTask } from '@/api/client'
 import ImagePreviewModal, { type PreviewImage } from '@/components/ImagePreviewModal.vue'
 import ImageSizeControl from '@/components/ImageSizeControl.vue'
@@ -26,6 +26,7 @@ import type {
 } from '@/types/api'
 
 const message = useMessage()
+const dialog = useDialog()
 const auth = useAuthStore()
 const conversations = ref<Conversation[]>([])
 const activeConversation = ref<ConversationDetail | null>(null)
@@ -73,6 +74,7 @@ const messageTimeFormatter = new Intl.DateTimeFormat('zh-CN', {
   hour12: false,
 })
 const editingTitle = ref<string | null>(null)
+const deletingConversationId = ref<string | null>(null)
 const titleDraft = ref('')
 const timeline = ref<HTMLElement | null>(null)
 let followTimelineBottom = true
@@ -342,6 +344,14 @@ function rememberActiveConversation(id: string) {
   }
 }
 
+function forgetActiveConversation() {
+  try {
+    localStorage.removeItem(activeConversationMemoryKey())
+  } catch {
+    // Keep the studio usable when browser storage is unavailable.
+  }
+}
+
 function readActiveConversation() {
   try {
     return localStorage.getItem(activeConversationMemoryKey())
@@ -387,6 +397,54 @@ async function saveTitle(item: Conversation) {
   Object.assign(item, updated)
   if (activeConversation.value?.id === item.id) activeConversation.value.title = title
   editingTitle.value = null
+}
+
+function confirmDeleteConversation(item: Conversation) {
+  if (conversationTaskStates[item.id]?.sending) {
+    message.warning('请先停止该会话正在执行的生成任务')
+    return
+  }
+  dialog.warning({
+    title: '删除会话',
+    content: `确定删除“${item.title}”吗？会话消息以及仅由该会话使用的图片将被永久删除，且无法恢复。`,
+    positiveText: '删除',
+    negativeText: '取消',
+    positiveButtonProps: { type: 'error' },
+    onPositiveClick: () => deleteConversation(item),
+  })
+}
+
+async function deleteConversation(item: Conversation) {
+  if (deletingConversationId.value) return
+  deletingConversationId.value = item.id
+  let deleted = false
+  try {
+    await api<void>(`/api/v1/conversations/${item.id}`, { method: 'DELETE' })
+    deleted = true
+    const deletedIndex = conversations.value.findIndex((conversation) => conversation.id === item.id)
+    conversations.value = conversations.value.filter((conversation) => conversation.id !== item.id)
+    stopTaskTimer(item.id)
+    delete conversationTaskStates[item.id]
+    if (editingTitle.value === item.id) editingTitle.value = null
+    if (activeConversation.value?.id === item.id) {
+      conversationSelectionVersion += 1
+      activeConversation.value = null
+      activeLeafId.value = null
+      composerParentId.value = null
+      forgetActiveConversation()
+      const nextConversation = conversations.value[
+        Math.min(Math.max(deletedIndex, 0), conversations.value.length - 1)
+      ]
+      if (nextConversation) await selectConversation(nextConversation.id)
+    }
+    message.success('会话已删除')
+  } catch (error) {
+    message.error(deleted
+      ? '会话已删除，但加载下一个会话失败，请刷新后重试'
+      : error instanceof Error ? error.message : '删除会话失败')
+  } finally {
+    deletingConversationId.value = null
+  }
 }
 
 function appendFiles(selectedFiles: File[]) {
@@ -988,7 +1046,17 @@ function handleTimelineImageLoad() {
             <strong>{{ item.title }}</strong>
             <small><span v-if="conversationTaskStates[item.id]?.sending" class="conversation-generating">生成中 · </span>{{ new Date(item.lastMessageAt).toLocaleString() }}</small>
           </div>
-          <button class="edit-title" title="修改标题" @click.stop="beginTitle(item)">✎</button>
+          <div v-if="editingTitle !== item.id" class="conversation-actions">
+            <button class="conversation-action edit-title" type="button" title="修改标题" @click.stop="beginTitle(item)">✎</button>
+            <button
+              class="conversation-action delete-conversation"
+              type="button"
+              :title="conversationTaskStates[item.id]?.sending ? '请先停止生成任务' : '删除会话'"
+              :aria-label="`删除会话 ${item.title}`"
+              :disabled="deletingConversationId === item.id"
+              @click.stop="confirmDeleteConversation(item)"
+            >{{ deletingConversationId === item.id ? '…' : '删' }}</button>
+          </div>
         </article>
         <div v-if="!filteredConversations.length" class="empty-compact">
           {{ conversations.length ? '没有匹配的会话标题。' : '还没有会话，点击右上角开始。' }}
