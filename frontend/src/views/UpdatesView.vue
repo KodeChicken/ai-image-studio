@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { NAlert, NButton, NCheckbox, NInput, NModal, NProgress, NSpin, useMessage } from 'naive-ui'
+import { NAlert, NButton, NCheckbox, NModal, NProgress, NSpin, useMessage } from 'naive-ui'
 import { api } from '@/api/client'
 
 interface UpdateJob { id: string; action: 'upgrade' | 'rollback'; fromVersion: string | null; targetVersion: string; status: string; progress: number; currentStep: string | null; errorMessage: string | null; createdAt: string }
@@ -16,7 +16,6 @@ const checking = ref(false)
 const confirmOpen = ref(false)
 const targetAction = ref<'upgrade' | 'rollback'>('upgrade')
 const targetVersion = ref('')
-const currentPassword = ref('')
 const confirmDestructive = ref(false)
 const submitting = ref(false)
 const message = useMessage()
@@ -56,19 +55,17 @@ async function checkUpdate() {
 function openAction(action: 'upgrade' | 'rollback', version: string) {
   targetAction.value = action
   targetVersion.value = version
-  currentPassword.value = ''
   confirmDestructive.value = false
   confirmOpen.value = true
 }
 
 async function submitAction() {
-  if (!currentPassword.value) return message.error('请输入当前管理员密码')
   submitting.value = true
   try {
     await api('/api/v1/admin/updates/jobs', {
       method: 'POST',
       headers: { 'X-AI-Studio-Action': 'update' },
-      body: JSON.stringify({ action: targetAction.value, targetVersion: targetVersion.value, currentPassword: currentPassword.value, confirmDestructiveMigration: confirmDestructive.value }),
+      body: JSON.stringify({ action: targetAction.value, targetVersion: targetVersion.value, confirmDestructiveMigration: confirmDestructive.value }),
     })
     confirmOpen.value = false
     message.success('Host Updater 已接受任务')
@@ -121,5 +118,5 @@ function dateTime(value: string) { return new Intl.DateTimeFormat('zh-CN', { dat
       <section class="analytics-section"><header><div><h2>升级审计</h2><p>保留最近 20 次升级或回滚请求。</p></div></header><div class="panel table-panel"><table><thead><tr><th>时间</th><th>动作</th><th>目标版本</th><th>状态</th><th>进度</th><th>步骤/错误</th></tr></thead><tbody><tr v-for="item in status?.jobs" :key="item.id"><td>{{ dateTime(item.createdAt) }}</td><td>{{ item.action }}</td><td>{{ item.targetVersion }}</td><td>{{ item.status }}</td><td>{{ item.progress }}%</td><td><span :class="{ 'status-error': item.errorMessage }">{{ item.errorMessage || item.currentStep || '—' }}</span></td></tr><tr v-if="!status?.jobs.length"><td colspan="6" class="muted-cell">暂无升级任务</td></tr></tbody></table></div></section>
     </n-spin>
   </div>
-  <n-modal v-model:show="confirmOpen" preset="card" :title="targetAction === 'upgrade' ? '确认升级' : '确认回滚'" class="dialog-card"><div class="form-stack"><n-alert type="warning">目标版本：{{ targetVersion }}。Host Updater 将独立执行备份、迁移、健康检查和失败恢复。</n-alert><label>当前管理员密码<n-input v-model:value="currentPassword" type="password" show-password-on="click" /></label><n-checkbox v-if="targetAction === 'upgrade' && updateCheck?.manifest.destructiveMigration" v-model:checked="confirmDestructive">我已确认该版本包含破坏性 Migration</n-checkbox><n-button type="primary" :loading="submitting" @click="submitAction">提交给 Host Updater</n-button></div></n-modal>
+  <n-modal v-model:show="confirmOpen" preset="card" :title="targetAction === 'upgrade' ? '确认升级' : '确认回滚'" class="dialog-card"><div class="form-stack"><n-alert type="warning">目标版本：{{ targetVersion }}。Host Updater 将独立执行备份、迁移、健康检查和失败恢复。</n-alert><n-checkbox v-if="targetAction === 'upgrade' && updateCheck?.manifest.destructiveMigration" v-model:checked="confirmDestructive">我已确认该版本包含破坏性 Migration</n-checkbox><n-button type="primary" :loading="submitting" @click="submitAction">提交给 Host Updater</n-button></div></n-modal>
 </template>

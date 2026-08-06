@@ -19,7 +19,6 @@ use crate::{
     AppState,
     auth::CurrentUser,
     error::{AppError, AppResult},
-    security::verify_password,
 };
 
 const ACTION_HEADER: &str = "x-ai-studio-action";
@@ -181,7 +180,6 @@ async fn check(
 struct CreateJobRequest {
     action: String,
     target_version: String,
-    current_password: String,
     #[serde(default)]
     confirm_destructive_migration: bool,
 }
@@ -194,7 +192,6 @@ async fn create_job(
 ) -> AppResult<Json<UpdateJobView>> {
     require_admin(&current)?;
     require_action_header(&headers)?;
-    verify_current_password(&state, current.id, input.current_password).await?;
     if !matches!(input.action.as_str(), "upgrade" | "rollback") {
         return Err(AppError::Validation(
             "action must be upgrade or rollback".to_owned(),
@@ -334,29 +331,6 @@ fn require_action_header(headers: &HeaderMap) -> AppResult<()> {
         Ok(())
     } else {
         Err(AppError::Forbidden)
-    }
-}
-
-async fn verify_current_password(
-    state: &AppState,
-    user_id: Uuid,
-    password: String,
-) -> AppResult<()> {
-    let hash = sqlx::query_scalar::<_, Option<String>>(
-        "SELECT password_hash FROM users WHERE id = $1 AND status = 'active'",
-    )
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await?
-    .flatten()
-    .ok_or(AppError::Unauthorized)?;
-    if verify_password(SecretString::from(password), hash)
-        .await
-        .map_err(AppError::Internal)?
-    {
-        Ok(())
-    } else {
-        Err(AppError::Unauthorized)
     }
 }
 
@@ -788,6 +762,19 @@ fn validate_updater_deployment(deployment: &UpdaterDeployment) -> anyhow::Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn update_job_request_does_not_require_a_password() {
+        let request: CreateJobRequest = serde_json::from_value(serde_json::json!({
+            "action": "upgrade",
+            "targetVersion": "1.2.3",
+            "confirmDestructiveMigration": false
+        }))
+        .unwrap();
+
+        assert_eq!(request.action, "upgrade");
+        assert_eq!(request.target_version, "1.2.3");
+    }
 
     #[test]
     fn semantic_versions_accept_optional_v_prefix() {
