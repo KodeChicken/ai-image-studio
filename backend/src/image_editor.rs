@@ -272,6 +272,7 @@ struct ExportFields {
     format: Option<String>,
     width: Option<i32>,
     height: Option<i32>,
+    scale: Option<i32>,
 }
 
 async fn export(
@@ -300,6 +301,7 @@ async fn export(
             Some("format") => fields.format = Some(field.text().await.map_err(field_error)?),
             Some("width") => fields.width = Some(parse_field(field).await?),
             Some("height") => fields.height = Some(parse_field(field).await?),
+            Some("scale") => fields.scale = Some(parse_field(field).await?),
             _ => {}
         }
     }
@@ -318,19 +320,14 @@ async fn export(
     let declared_height = fields
         .height
         .ok_or_else(|| AppError::Validation("height is required".to_owned()))?;
+    let scale = fields.scale.unwrap_or(1);
     let view = load_view(&state, current.id, document_id).await?;
     if declared_version != view.version {
         return Err(AppError::Conflict(
             "export is based on a stale editor document version".to_owned(),
         ));
     }
-    if declared_width != view.document.canvas.width
-        || declared_height != view.document.canvas.height
-    {
-        return Err(AppError::Validation(
-            "declared export dimensions do not match the editor document".to_owned(),
-        ));
-    }
+    validate_export_dimensions(&view.document, scale, declared_width, declared_height)?;
     if bytes.len() > state.settings.max_upload_size_mb * 1024 * 1024 {
         return Err(AppError::Validation(format!(
             "image exceeds the {} MB upload limit",
@@ -724,6 +721,32 @@ fn validate_export(
     Ok(())
 }
 
+fn validate_export_dimensions(
+    document: &EditorDocumentV1,
+    scale: i32,
+    width: i32,
+    height: i32,
+) -> AppResult<()> {
+    if !(1..=3).contains(&scale) {
+        return Err(AppError::Validation(
+            "export scale must be 1, 2 or 3".to_owned(),
+        ));
+    }
+    let expected_width = document.canvas.width.checked_mul(scale);
+    let expected_height = document.canvas.height.checked_mul(scale);
+    if expected_width != Some(width)
+        || expected_height != Some(height)
+        || width > MAX_EDGE
+        || height > MAX_EDGE
+        || i64::from(width) * i64::from(height) > MAX_PIXELS
+    {
+        return Err(AppError::Validation(
+            "declared export dimensions do not match the editor document and scale".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 fn default_document(asset_id: Uuid, width: i32, height: i32, mode: &str) -> EditorDocumentV1 {
     EditorDocumentV1 {
         schema_version: 1,
@@ -841,5 +864,18 @@ mod tests {
             validate_export(&validated, format, 1920, 1080).unwrap();
             assert!(validate_export(&validated, format, 1080, 1920).is_err());
         }
+    }
+
+    #[test]
+    fn export_dimensions_require_a_valid_scale_and_pixel_budget() {
+        let document = default_document(Uuid::new_v4(), 960, 128, "crop");
+        validate_export_dimensions(&document, 1, 960, 128).unwrap();
+        validate_export_dimensions(&document, 2, 1920, 256).unwrap();
+        validate_export_dimensions(&document, 3, 2880, 384).unwrap();
+        assert!(validate_export_dimensions(&document, 2, 960, 128).is_err());
+        assert!(validate_export_dimensions(&document, 4, 3840, 512).is_err());
+
+        let oversized = default_document(Uuid::new_v4(), 4096, 4096, "crop");
+        assert!(validate_export_dimensions(&oversized, 2, 8192, 8192).is_err());
     }
 }

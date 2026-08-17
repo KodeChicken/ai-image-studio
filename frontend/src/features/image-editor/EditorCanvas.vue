@@ -383,6 +383,22 @@ function fitViewport() {
   scheduleRender()
 }
 
+function actualPixels() {
+  if (!stage) return
+  const cropMode = props.tool === 'crop'
+  const workspaceWidth = cropMode ? props.sourceWidth : props.document.canvas.width
+  const workspaceHeight = cropMode ? props.sourceHeight : props.document.canvas.height
+  const margin = stage.width() < 700 ? 24 : 72
+  const fitScale = Math.min(
+    Math.max(0.01, (stage.width() - margin * 2) / workspaceWidth),
+    Math.max(0.01, (stage.height() - margin * 2) / workspaceHeight),
+  )
+  zoomMultiplier = 1 / fitScale
+  panX = 0
+  panY = 0
+  scheduleRender()
+}
+
 function snapImagePosition(
   position: { x: number; y: number },
   image: ImageEditorDocumentV1['image'],
@@ -434,7 +450,7 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value))
 }
 
-defineExpose({ fitViewport })
+defineExpose({ actualPixels, fitViewport })
 </script>
 
 <template>

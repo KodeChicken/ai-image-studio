@@ -105,13 +105,24 @@ describe('ImageEditorView', () => {
         const body = JSON.parse(String(options.body))
         return { ...editorResponse(), version: 2, document: body.document }
       }
+      if (path === '/api/v1/image-edit-documents/document-1/exports' && options?.method === 'POST') {
+        const form = options.body as FormData
+        return {
+          id: 'export-1', contentUrl: '/api/v1/image-assets/export-1/content',
+          mimeType: `image/${form.get('format')}`, width: Number(form.get('width')),
+          height: Number(form.get('height')), fileSizeBytes: 6,
+        }
+      }
       if (path === '/api/v1/image-edit-documents/document-1') return editorResponse()
       if (path === '/api/v1/models?includeDiscovered=true&imageOnly=true') return []
       throw new Error(`Unexpected API request: ${path}`)
     })
   })
 
-  afterEach(() => vi.restoreAllMocks())
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+  })
 
   it('keeps width and height independent and preserves invalid drafts', async () => {
     const wrapper = shallowMount(ImageEditorView)
@@ -308,6 +319,40 @@ describe('ImageEditorView', () => {
     await (wrapper.vm as unknown as { exportImage: () => Promise<void> }).exportImage()
 
     expect(wrapper.findComponent(EditorCanvas).props('document')).toEqual(before)
+    wrapper.unmount()
+  })
+
+  it('exports and downloads the latest crop without waiting for a render frame', async () => {
+    const createObjectURL = vi.fn(() => 'blob:cropped-export')
+    const revokeObjectURL = vi.fn()
+    vi.stubGlobal('URL', { createObjectURL, revokeObjectURL })
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined)
+    const wrapper = shallowMount(ImageEditorView)
+    await flushPromises()
+    await wrapper.findAll('.editor-toolbar button')[1]!.trigger('click')
+    const vm = wrapper.vm as unknown as {
+      updateCropDraft: (field: 'height', value: string) => void
+      exportImage: () => Promise<void>
+    }
+
+    vm.updateCropDraft('height', '261')
+    await vm.exportImage()
+    await flushPromises()
+
+    expect(renderEditorDocumentMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        canvas: expect.objectContaining({ height: 261 }),
+        image: expect.objectContaining({ crop: expect.objectContaining({ height: 261 }) }),
+      }),
+      '/api/v1/image-assets/asset-1/content',
+      { format: 'png', quality: 0.95, scale: 1 },
+    )
+    expect(createObjectURL).toHaveBeenCalledWith(expect.any(Blob))
+    expect(click).toHaveBeenCalledOnce()
+    expect(wrapper.find('.export-result a').attributes('href'))
+      .toBe('/api/v1/image-assets/export-1/content')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:cropped-export')
     wrapper.unmount()
   })
 

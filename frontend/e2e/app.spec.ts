@@ -687,17 +687,19 @@ async function mockApi(
     if (path === '/api/v1/image-edit-documents/81000000-0000-4000-8000-000000000001/exports' && method === 'POST') {
       const body = request.postData() ?? ''
       const format = /name="format"\r\n\r\n([^\r]+)/.exec(body)?.[1] ?? 'png'
+      const width = Number(/name="width"\r\n\r\n([^\r]+)/.exec(body)?.[1] ?? editorDocument.canvas.width)
+      const height = Number(/name="height"\r\n\r\n([^\r]+)/.exec(body)?.[1] ?? editorDocument.canvas.height)
       state.editorExports.push({
-        width: editorDocument.canvas.width,
-        height: editorDocument.canvas.height,
+        width,
+        height,
         format,
       })
       return fulfill({
         id: crypto.randomUUID(),
         contentUrl: '/mock/generated.png',
         mimeType: `image/${format}`,
-        width: editorDocument.canvas.width,
-        height: editorDocument.canvas.height,
+        width,
+        height,
         fileSizeBytes: 1024,
       }, 201)
     }
@@ -1018,8 +1020,7 @@ test('messages show timestamps and live generation elapsed time', async ({ page 
   const originalPixelCrop = page.locator('.four-fields input')
   await originalPixelCrop.nth(3).fill('261')
   await expect(originalPixelCrop.nth(3)).toHaveValue('261')
-  await page.getByRole('button', { name: '保存', exact: true }).click()
-  await expect(page.getByText('已保存', { exact: true })).toBeVisible()
+  await expect(page.getByText('所有更改已自动保存', { exact: true })).toBeVisible()
   await page.goBack()
   await expect(page).toHaveURL(/\/studio$/)
 
@@ -1392,22 +1393,24 @@ test('Konva editor keeps exact source-pixel crops, canvas layout and export form
   await page.locator('.editor-inspector .n-select').first().click()
   await page.getByText('完整显示（保持比例）', { exact: true }).last().click()
 
-  await page.getByRole('button', { name: '导出成品' }).click()
+  await page.locator('.export-scale').click()
+  await page.getByText('高清 2×', { exact: true }).last().click()
+  await page.getByRole('button', { name: '导出并下载' }).click()
   await expect.poll(() => state.editorExports.length).toBe(1)
 
   await page.locator('.export-format').click()
   await page.getByText('JPEG', { exact: true }).last().click()
-  await page.getByRole('button', { name: '导出成品' }).click()
+  await page.getByRole('button', { name: '导出并下载' }).click()
   await expect.poll(() => state.editorExports.length).toBe(2)
 
   await page.locator('.export-format').click()
   await page.getByText('WebP', { exact: true }).last().click()
-  await page.getByRole('button', { name: '导出成品' }).click()
+  await page.getByRole('button', { name: '导出并下载' }).click()
   await expect.poll(() => state.editorExports.length).toBe(3)
   expect(state.editorExports).toEqual([
-    { width: 1920, height: 1080, format: 'png' },
-    { width: 1920, height: 1080, format: 'jpeg' },
-    { width: 1920, height: 1080, format: 'webp' },
+    { width: 3840, height: 2160, format: 'png' },
+    { width: 3840, height: 2160, format: 'jpeg' },
+    { width: 3840, height: 2160, format: 'webp' },
   ])
   expect(state.editorSaves.every((document) => (
     document.image.assetId === '73000000-0000-4000-8000-000000000099'

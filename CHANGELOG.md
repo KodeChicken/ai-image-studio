@@ -17,6 +17,7 @@
 - 失败任务原消息重试、可见 SSE 恢复状态，以及任务创建失败时的草稿恢复和上传 Asset 补偿清理。
 - Host Updater 真实 Docker 隔离演练，覆盖固定镜像 Digest 成功链，以及 Digest、Migration、候选、正式切换四类失败恢复；PostgreSQL Dump、S3 备份和升级后历史图片均做真实恢复与校验。
 - Web 管理 API 经 Bearer + HMAC、Unix Socket、Host Updater 和正式执行器完成升级并幂等回写部署历史的真实 Docker 整链演练。
+- 图片编辑器新增 1:1 像素预览和 1×/2×/3× 高清导出倍率，明确展示实际输出尺寸。
 
 ### 修复
 
@@ -24,6 +25,7 @@
 - Release Manifest 同时兼容 snake_case 发布契约与 Web camelCase 响应，并支持通过 `HTTP_CA_CERT_FILE` 信任内部 HTTPS 根 CA。
 - Release Manifest 检查安全跟随受限的 HTTPS 重定向，兼容 GitHub Release 下载地址且不向跨域目标转发 Token。
 - Host Updater 正确解析执行器的 camelCase 进度消息，执行升级时不再收紧既有图片挂载目录权限。
+- 图片编辑器统一“导出并下载”和“再次下载”的成品来源，导出前同步提交裁剪参数，并以自动保存状态替代重复的手动保存入口。
 
 ## [0.1.0] - 2026-07-21
 

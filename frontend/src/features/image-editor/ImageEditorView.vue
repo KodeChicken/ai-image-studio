@@ -43,7 +43,6 @@ const initialDocument = ref<ImageEditorDocumentV1 | null>(null)
 const version = ref(0)
 const tool = ref<EditorTool>('select')
 const zoom = ref(100)
-const saving = ref(false)
 const saveState = ref<'saved' | 'dirty' | 'saving' | 'error'>('saved')
 const savedFingerprint = ref('')
 const history = new EditorHistory(100)
@@ -51,7 +50,6 @@ const historyRevision = ref(0)
 const canvasRef = ref<InstanceType<typeof EditorCanvas> | null>(null)
 let saveTimer: ReturnType<typeof setTimeout> | null = null
 let savePromise: Promise<void> | null = null
-let dimensionFrame = 0
 let inputSessionStart: ImageEditorDocumentV1 | null = null
 
 const widthDraft = ref('')
@@ -72,7 +70,9 @@ const customCropRatioHeight = ref('9')
 const rotationDraft = ref('0')
 const rotationError = ref('')
 const exportFormat = ref<EditorExportFormat>('png')
+const exportScale = ref<1 | 2 | 3>(1)
 const exporting = ref(false)
+const exportStage = ref('')
 const exportResult = ref<EditorAsset | null>(null)
 const pickingColor = ref(false)
 const models = ref<ImageModel[]>([])
@@ -87,6 +87,19 @@ const canUndo = computed(() => (historyRevision.value >= 0 && history.canUndo))
 const canRedo = computed(() => (historyRevision.value >= 0 && history.canRedo))
 const sourceAsset = computed(() => documentView.value?.sourceAsset ?? null)
 const imageUrl = computed(() => currentAsset.value?.contentUrl ?? '')
+const exportDimensions = computed(() => ({
+  width: (editorDocument.value?.canvas.width ?? 0) * exportScale.value,
+  height: (editorDocument.value?.canvas.height ?? 0) * exportScale.value,
+}))
+const exportScaleOptions = computed(() => ([1, 2, 3] as const).map((scale) => {
+  const width = (editorDocument.value?.canvas.width ?? 0) * scale
+  const height = (editorDocument.value?.canvas.height ?? 0) * scale
+  return {
+    label: scale === 1 ? '标准 1×' : scale === 2 ? '高清 2×' : '超清 3×',
+    value: scale,
+    disabled: width > 8192 || height > 8192 || width * height > 33_554_432,
+  }
+}))
 const selectedAiModel = computed(() => models.value.find((model) => model.id === aiModelId.value) ?? null)
 const outpaintModels = computed(() => models.value.filter((model) => {
   const capability = imageEditCapability(model)
@@ -113,7 +126,7 @@ const editorTools = computed<Array<{ id: EditorTool; icon: string; label: string
   return items
 })
 const statusLabel = computed(() => ({
-  saved: '已保存', dirty: '有未保存修改', saving: '保存中…', error: '保存失败',
+  saved: '所有更改已自动保存', dirty: '等待自动保存…', saving: '正在自动保存…', error: '自动保存失败',
 })[saveState.value])
 
 onMounted(async () => {
@@ -126,7 +139,6 @@ onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', protectUnsavedChanges)
   window.removeEventListener('keydown', handleShortcut)
   if (saveTimer) clearTimeout(saveTimer)
-  cancelAnimationFrame(dimensionFrame)
 })
 
 onBeforeRouteLeave(() => {
@@ -224,7 +236,6 @@ async function saveDocument(showSuccess = true): Promise<void> {
     return
   }
   const operation = (async () => {
-    saving.value = true
     saveState.value = 'saving'
     const saved = await api<ImageEditDocumentResponse>(
       `/api/v1/image-edit-documents/${documentId}`,
@@ -251,12 +262,15 @@ async function saveDocument(showSuccess = true): Promise<void> {
     if (showSuccess) message.error(error instanceof Error ? error.message : '保存失败')
     throw error
   } finally {
-    saving.value = false
     if (savePromise === operation) savePromise = null
   }
   if (editorDocument.value && fingerprint(editorDocument.value) !== savedFingerprint.value) {
     await saveDocument(showSuccess)
   }
+}
+
+function retrySave() {
+  void saveDocument().catch(() => undefined)
 }
 
 function undo() {
@@ -322,19 +336,15 @@ function updateCanvasDraft(edge: 'width' | 'height', value: string) {
     dimensionError.value = error instanceof Error ? error.message : '尺寸无效'
     return
   }
-  cancelAnimationFrame(dimensionFrame)
-  dimensionFrame = requestAnimationFrame(() => {
-    if (!editorDocument.value) return
-    const next = cloneEditorDocument(editorDocument.value)
-    next.canvas.width = width
-    next.canvas.height = height
-    const fitted = next.layout.fitStrategy === 'free' ? next : applyFitStrategy(next)
-    commitDocument(fitted, false)
-    if (aspectLocked.value) {
-      if (edge === 'width' && activeInput.value !== 'height') heightDraft.value = String(height)
-      if (edge === 'height' && activeInput.value !== 'width') widthDraft.value = String(width)
-    }
-  })
+  const next = cloneEditorDocument(editorDocument.value)
+  next.canvas.width = width
+  next.canvas.height = height
+  const fitted = next.layout.fitStrategy === 'free' ? next : applyFitStrategy(next)
+  commitDocument(fitted, false)
+  if (aspectLocked.value) {
+    if (edge === 'width' && activeInput.value !== 'height') heightDraft.value = String(height)
+    if (edge === 'height' && activeInput.value !== 'width') widthDraft.value = String(width)
+  }
 }
 
 function updateCropDraft(field: 'x' | 'y' | 'width' | 'height', value: string) {
@@ -368,13 +378,9 @@ function updateCropDraft(field: 'x' | 'y' | 'width' | 'height', value: string) {
     if (field === 'width' && activeInput.value !== 'crop-height') cropHeightDraft.value = String(crop.height)
     if (field === 'height' && activeInput.value !== 'crop-width') cropWidthDraft.value = String(crop.width)
   }
-  cancelAnimationFrame(dimensionFrame)
-  dimensionFrame = requestAnimationFrame(() => {
-    if (!editorDocument.value) return
-    const next = cloneEditorDocument(editorDocument.value)
-    next.image.crop = crop
-    commitDocument(tool.value === 'crop' ? cropAsCanvas(next) : next, false)
-  })
+  const next = cloneEditorDocument(editorDocument.value)
+  next.image.crop = crop
+  commitDocument(tool.value === 'crop' ? cropAsCanvas(next) : next, false)
 }
 
 function applyCropRatio(ratioWidth: number, ratioHeight: number) {
@@ -527,30 +533,58 @@ async function pickBackgroundColor() {
 async function exportImage() {
   if (!editorDocument.value || !documentView.value || !currentAsset.value) return
   exporting.value = true
+  exportStage.value = '正在保存编辑…'
   exportResult.value = null
   try {
     await saveDocument(false)
-    const blob = await renderEditorDocument(editorDocument.value, currentAsset.value.contentUrl, {
+    if (!editorDocument.value || !documentView.value || !currentAsset.value) return
+    const snapshot = cloneEditorDocument(editorDocument.value)
+    const documentVersion = version.value
+    const scale = exportScale.value
+    const outputWidth = snapshot.canvas.width * scale
+    const outputHeight = snapshot.canvas.height * scale
+    exportStage.value = '正在生成图片…'
+    const blob = await renderEditorDocument(snapshot, currentAsset.value.contentUrl, {
       format: exportFormat.value,
       quality: 0.95,
+      scale,
     })
     const form = new FormData()
     const extension = exportFormat.value === 'jpeg' ? 'jpg' : exportFormat.value
-    form.append('file', blob, `ai-image-studio-${documentView.value.id}.${extension}`)
-    form.append('documentVersion', String(version.value))
+    const filename = `ai-image-studio-${outputWidth}x${outputHeight}.${extension}`
+    form.append('file', blob, filename)
+    form.append('documentVersion', String(documentVersion))
     form.append('format', exportFormat.value)
-    form.append('width', String(editorDocument.value.canvas.width))
-    form.append('height', String(editorDocument.value.canvas.height))
+    form.append('width', String(outputWidth))
+    form.append('height', String(outputHeight))
+    form.append('scale', String(scale))
+    exportStage.value = '正在保存成品…'
     exportResult.value = await api<EditorAsset>(
       `/api/v1/image-edit-documents/${documentView.value.id}/exports`,
       { method: 'POST', body: form },
     )
-    message.success(`已导出 ${editorDocument.value.canvas.width} × ${editorDocument.value.canvas.height} 清晰成品`)
+    downloadBlob(blob, filename)
+    message.success(`已导出并下载 ${outputWidth} × ${outputHeight} 成品`)
   } catch (error) {
     message.error(error instanceof Error ? error.message : '导出失败，编辑状态已保留')
   } finally {
     exporting.value = false
+    exportStage.value = ''
   }
+}
+
+function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob)
+  const anchor = window.document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  anchor.click()
+  window.setTimeout(() => URL.revokeObjectURL(url), 0)
+}
+
+function exportDownloadName(asset: EditorAsset) {
+  const extension = asset.mimeType === 'image/jpeg' ? 'jpg' : asset.mimeType === 'image/webp' ? 'webp' : 'png'
+  return `ai-image-studio-${asset.width}x${asset.height}.${extension}`
 }
 
 async function runAiExpand() {
@@ -731,7 +765,13 @@ function fingerprint(document: ImageEditorDocumentV1) {
       <header class="editor-topbar">
         <div class="editor-file">
           <button type="button" aria-label="返回" @click="router.back()">←</button>
-          <div><strong>{{ documentView.title }}</strong><span :class="saveState">{{ statusLabel }}</span></div>
+          <div>
+            <strong>{{ documentView.title }}</strong>
+            <button
+              v-if="saveState === 'error'" type="button" class="save-retry" @click="retrySave"
+            >{{ statusLabel }} · 重试</button>
+            <span v-else :class="saveState" aria-live="polite">{{ statusLabel }}</span>
+          </div>
         </div>
         <div class="editor-history-actions">
           <n-button quaternary :disabled="!canUndo" @click="undo">↶ 撤销</n-button>
@@ -741,13 +781,16 @@ function fingerprint(document: ImageEditorDocumentV1) {
         <div class="editor-export-actions">
           <span>{{ zoom }}%</span>
           <n-button quaternary @click="canvasRef?.fitViewport()">适应窗口</n-button>
+          <n-button quaternary @click="canvasRef?.actualPixels()">1:1预览</n-button>
           <n-select
             v-model:value="exportFormat" class="export-format" :options="[
               { label: 'PNG', value: 'png' }, { label: 'JPEG', value: 'jpeg' }, { label: 'WebP', value: 'webp' },
             ]"
           />
-          <n-button :loading="saving" @click="saveDocument()">保存</n-button>
-          <n-button type="primary" :loading="exporting" @click="exportImage">导出成品</n-button>
+          <n-select v-model:value="exportScale" class="export-scale" :options="exportScaleOptions" />
+          <n-button type="primary" :loading="exporting" @click="exportImage">
+            {{ exporting ? exportStage : '导出并下载' }}
+          </n-button>
         </div>
       </header>
 
@@ -880,8 +923,8 @@ function fingerprint(document: ImageEditorDocumentV1) {
           </section>
 
           <section v-if="exportResult" class="export-result">
-            <strong>成品已保存</strong><span>{{ exportResult.width }} × {{ exportResult.height }} · {{ exportResult.mimeType }}</span>
-            <a :href="exportResult.contentUrl" download>下载成品</a>
+            <strong>最近导出</strong><span>{{ exportResult.width }} × {{ exportResult.height }} · {{ exportResult.mimeType }}</span>
+            <a :href="exportResult.contentUrl" :download="exportDownloadName(exportResult)">再次下载</a>
           </section>
         </aside>
       </section>
@@ -890,7 +933,8 @@ function fingerprint(document: ImageEditorDocumentV1) {
         <span>初始原图 {{ sourceAsset?.width }} × {{ sourceAsset?.height }}</span>
         <span>当前素材 {{ currentAsset.width }} × {{ currentAsset.height }}</span>
         <span>成品 {{ editorDocument.canvas.width }} × {{ editorDocument.canvas.height }}</span>
-        <span>预览 {{ zoom }}%</span>
+        <span>预览 {{ zoom }}%{{ zoom > 100 ? ' · 当前为放大预览' : '' }}</span>
+        <span>实际导出 {{ exportDimensions.width }} × {{ exportDimensions.height }}</span>
         <span>sRGB · 原图只读</span>
       </footer>
     </template>
@@ -901,13 +945,15 @@ function fingerprint(document: ImageEditorDocumentV1) {
 .image-editor-page { display: grid; height: 100dvh; min-width: 0; grid-template-rows: 58px minmax(0, 1fr) 30px; color: #eeeaf7; background: #17181d; }
 .editor-loading { display: grid; height: 100dvh; place-items: center; align-content: center; gap: 14px; color: #c9c4d4; background: #17181d; }
 .editor-loading.error strong { color: #fca5a5; font-size: 18px; }
-.editor-topbar { display: grid; z-index: 4; grid-template-columns: minmax(180px, 1fr) auto minmax(350px, 1fr); align-items: center; gap: 14px; padding: 0 14px; border-bottom: 1px solid rgba(255,255,255,.08); background: #222329; }
+.editor-topbar { display: grid; z-index: 4; grid-template-columns: minmax(180px, 1fr) auto minmax(520px, 1fr); align-items: center; gap: 14px; padding: 0 14px; border-bottom: 1px solid rgba(255,255,255,.08); background: #222329; }
 .editor-file, .editor-file > div, .editor-history-actions, .editor-export-actions { display: flex; align-items: center; gap: 8px; }
 .editor-file > button { display: grid; width: 34px; height: 34px; place-items: center; padding: 0; border: 1px solid rgba(255,255,255,.1); border-radius: 9px; cursor: pointer; color: inherit; background: transparent; }
 .editor-file > div { min-width: 0; align-items: flex-start; flex-direction: column; gap: 1px; }
 .editor-file strong { overflow: hidden; max-width: 230px; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
-.editor-file span, .editor-export-actions > span { color: #96919f; font-size: 10px; }.editor-file span.dirty, .editor-file span.error { color: #fbbf24; }.editor-file span.saved { color: #86efac; }
-.editor-history-actions { justify-content: center; }.editor-export-actions { justify-content: flex-end; }.export-format { width: 92px; }
+.editor-file span, .editor-export-actions > span { color: #96919f; font-size: 10px; }.editor-file span.dirty { color: #fbbf24; }.editor-file span.saved { color: #86efac; }
+.save-retry { padding: 0; border: 0; cursor: pointer; color: #fbbf24; background: transparent; font-size: 10px; text-align: left; }
+.save-retry:focus-visible { outline: 2px solid #8b5cf6; outline-offset: 2px; }
+.editor-history-actions { justify-content: center; }.editor-export-actions { justify-content: flex-end; }.export-format { width: 92px; }.export-scale { width: 108px; }
 .editor-body { display: grid; min-height: 0; grid-template-columns: 74px minmax(0, 1fr) 320px; }
 .editor-toolbar { display: flex; z-index: 3; align-items: stretch; flex-direction: column; gap: 6px; padding: 10px 7px; border-right: 1px solid rgba(255,255,255,.08); background: #202126; }
 .editor-toolbar button { display: grid; min-height: 58px; place-items: center; align-content: center; gap: 4px; padding: 6px 2px; border: 0; border-radius: 10px; cursor: pointer; color: #aaa5b3; background: transparent; font-size: 10px; }

@@ -5,6 +5,7 @@ export type EditorExportFormat = 'png' | 'jpeg' | 'webp'
 export interface EditorExportOptions {
   format: EditorExportFormat
   quality?: number
+  scale?: 1 | 2 | 3
 }
 
 export interface OutpaintInputBlobs {
@@ -23,12 +24,15 @@ export async function renderEditorDocument(
   imageUrl: string,
   options: EditorExportOptions,
 ): Promise<Blob> {
-  assertCanvasSize(document.canvas.width, document.canvas.height)
+  const scale = options.scale ?? 1
+  const outputWidth = document.canvas.width * scale
+  const outputHeight = document.canvas.height * scale
+  assertCanvasSize(outputWidth, outputHeight)
   if (options.format === 'jpeg' && document.canvas.background.type === 'transparent') {
     throw new Error('透明背景不能导出 JPEG，请选择 PNG、WebP 或设置背景色')
   }
   const source = await loadSourceImage(imageUrl)
-  const canvas = createCanvas(document.canvas.width, document.canvas.height)
+  const canvas = createCanvas(outputWidth, outputHeight)
   const context = canvas.getContext('2d', { alpha: options.format !== 'jpeg' })
   if (!context) {
     source.close?.()
@@ -37,6 +41,7 @@ export async function renderEditorDocument(
   try {
     context.imageSmoothingEnabled = true
     context.imageSmoothingQuality = 'high'
+    context.scale(scale, scale)
     drawBackground(context, source, document)
     drawImageElement(context, source, document)
     return await canvasToBlob(canvas, MIME_TYPES[options.format], options.quality ?? 0.95)

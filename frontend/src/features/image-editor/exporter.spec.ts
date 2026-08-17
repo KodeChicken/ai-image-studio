@@ -64,6 +64,32 @@ describe('deterministic editor export', () => {
     expect(drawImage).toHaveBeenCalled()
   })
 
+  it('renders the selected source crop and supports a 2x export', async () => {
+    const document = createEditorDocument('asset', 4096, 4096)
+    document.canvas.width = 960
+    document.canvas.height = 128
+    document.image.crop = { x: 120, y: 240, width: 3840, height: 512 }
+
+    await renderEditorDocument(document, '/api/v1/image-assets/asset/content', {
+      format: 'png',
+      scale: 2,
+    })
+
+    expect(encodedSizes[0]).toEqual({ width: 1920, height: 256, mimeType: 'image/png' })
+    expect(contexts[0]!.scale).toHaveBeenCalledWith(2, 2)
+    expect(drawImage).toHaveBeenCalledWith(
+      expect.anything(),
+      120,
+      240,
+      3840,
+      512,
+      0,
+      0,
+      3840,
+      512,
+    )
+  })
+
   it('renders same-size PNG source and alpha mask for outpaint', async () => {
     const document = createEditorDocument('asset', 1024, 1024)
     document.canvas.width = 1536
