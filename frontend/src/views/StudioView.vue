@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
+import { preloadImageEditor } from '@/router/imageEditorRoute'
 import { NButton, NInput, NInputNumber, NModal, NSelect, NSwitch, useDialog, useMessage } from 'naive-ui'
 import { api, streamPost, streamTask } from '@/api/client'
 import ImagePreviewModal, { type PreviewImage } from '@/components/ImagePreviewModal.vue'
@@ -1147,6 +1148,8 @@ function handleTimelineImageLoad() {
                       v-if="item.role === 'assistant'"
                       class="image-edit-button"
                       :to="`/editor/${asset.id}`"
+                      @pointerenter="preloadImageEditor"
+                      @focus="preloadImageEditor"
                     >编辑成品</RouterLink>
                     <a
                       class="image-download-button"

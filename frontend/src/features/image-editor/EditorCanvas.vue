@@ -2,6 +2,7 @@
 import Konva from 'konva'
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { cloneEditorDocument, type ImageEditorDocumentV1 } from './editorDocument'
+import { evictEditorImage, loadEditorImage } from './imagePreload'
 
 export type EditorTool = 'select' | 'crop' | 'canvas' | 'background' | 'ai'
 
@@ -69,6 +70,7 @@ watch(
 
 function loadImage() {
   const loadVersion = ++imageLoadVersion
+  const retrying = Boolean(imageError.value)
   clearImageLoadTimer()
   loadingImage.value = true
   imageError.value = ''
@@ -78,27 +80,24 @@ function loadImage() {
     imageError.value = '原图地址无效'
     return
   }
-  const image = new Image()
-  image.onload = () => {
+  if (retrying) evictEditorImage(props.imageUrl)
+  void loadEditorImage(props.imageUrl).then((image) => {
     if (loadVersion !== imageLoadVersion) return
     clearImageLoadTimer()
     sourceImage = image
     loadingImage.value = false
     scheduleRender()
-  }
-  image.onerror = () => {
+  }).catch(() => {
     if (loadVersion !== imageLoadVersion) return
     clearImageLoadTimer()
     loadingImage.value = false
     imageError.value = '原图加载失败，请检查网络后重试'
     scheduleRender()
-  }
-  image.src = props.imageUrl
+  })
   imageLoadTimer = window.setTimeout(() => {
     if (loadVersion !== imageLoadVersion) return
-    image.onload = null
-    image.onerror = null
-    image.src = ''
+    imageLoadVersion += 1
+    evictEditorImage(props.imageUrl)
     loadingImage.value = false
     imageError.value = '原图加载超时，请重试'
     scheduleRender()

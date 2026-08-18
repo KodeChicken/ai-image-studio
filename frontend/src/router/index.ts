@@ -1,12 +1,16 @@
+import { ref } from 'vue'
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import DefaultLayout from '@/layouts/DefaultLayout.vue'
+import { loadImageEditorView } from './imageEditorRoute'
+
+export const imageEditorRouteLoading = ref(false)
 
 const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/login', name: 'login', component: () => import('@/views/LoginView.vue') },
-    { path: '/editor/:assetId', name: 'image-editor', component: () => import('@/features/image-editor/ImageEditorView.vue') },
+    { path: '/editor/:assetId', name: 'image-editor', component: loadImageEditorView },
     {
       path: '/',
       component: DefaultLayout,
@@ -26,12 +30,21 @@ const router = createRouter({
 })
 
 router.beforeEach(async (to) => {
+  imageEditorRouteLoading.value = to.name === 'image-editor'
   const auth = useAuthStore()
   if (!auth.initialized) await auth.restore()
   if (to.name !== 'login' && !auth.user) return { name: 'login' }
   if (to.name === 'login' && auth.user) return { name: 'studio' }
   if (to.meta.admin && auth.user?.role !== 'admin') return { name: 'studio' }
   return true
+})
+
+router.afterEach(() => {
+  imageEditorRouteLoading.value = false
+})
+
+router.onError(() => {
+  imageEditorRouteLoading.value = false
 })
 
 export default router

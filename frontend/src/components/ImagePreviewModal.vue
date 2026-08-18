@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { NButton, NModal } from 'naive-ui'
 import { RouterLink } from 'vue-router'
+import { preloadImageEditor } from '@/router/imageEditorRoute'
 
 export interface PreviewImage {
   id?: string
@@ -33,7 +34,13 @@ const downloadName = computed(() => {
       <footer>
         <div><strong>{{ image.label }}</strong><span>{{ image.metadata }}</span></div>
         <div class="preview-actions">
-          <RouterLink v-if="image.id" class="preview-edit-link" :to="`/editor/${image.id}`">编辑成品</RouterLink>
+          <RouterLink
+            v-if="image.id"
+            class="preview-edit-link"
+            :to="`/editor/${image.id}`"
+            @pointerenter="preloadImageEditor"
+            @focus="preloadImageEditor"
+          >编辑成品</RouterLink>
           <n-button tag="a" type="primary" :href="image.contentUrl" :download="downloadName">下载原图</n-button>
         </div>
       </footer>

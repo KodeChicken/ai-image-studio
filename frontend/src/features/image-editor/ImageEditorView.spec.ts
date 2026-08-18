@@ -94,6 +94,7 @@ function outpaintModel() {
 describe('ImageEditorView', () => {
   beforeEach(() => {
     apiMock.mockReset()
+    routerReplace.mockReset().mockResolvedValue(undefined)
     streamTaskMock.mockReset().mockResolvedValue(undefined)
     renderEditorDocumentMock.mockReset().mockResolvedValue(new Blob(['export'], { type: 'image/png' }))
     renderOutpaintInputsMock.mockReset().mockResolvedValue({
@@ -231,6 +232,23 @@ describe('ImageEditorView', () => {
     const wrapper = shallowMount(ImageEditorView)
     await flushPromises()
     expect(wrapper.find('.editor-toolbar').text()).not.toContain('AI 扩图')
+    wrapper.unmount()
+  })
+
+  it('shows the editor without waiting for the model list', async () => {
+    const pendingModels = new Promise<never>(() => undefined)
+    apiMock.mockImplementation(async (path: string) => {
+      if (path === '/api/v1/image-edit-documents/document-1') return editorResponse()
+      if (path === '/api/v1/models?includeDiscovered=true&imageOnly=true') return pendingModels
+      throw new Error(`Unexpected API request: ${path}`)
+    })
+
+    const wrapper = shallowMount(ImageEditorView)
+    await flushPromises()
+
+    expect(wrapper.findComponent(EditorCanvas).exists()).toBe(true)
+    expect(wrapper.find('.editor-loading').exists()).toBe(false)
+    expect(wrapper.find('.editor-toolbar').text()).toContain('裁剪')
     wrapper.unmount()
   })
 

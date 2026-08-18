@@ -23,6 +23,7 @@ import { EditorHistory } from './editorHistory'
 import { applyFitStrategy } from './fitStrategies'
 import { centerCrop, fitCropToRatio, resizeCropWithRatio } from './cropGeometry'
 import { centerImage, fitImageToEdge, rotateImageAroundCenter } from './imageTransforms'
+import { preloadEditorImage } from './imagePreload'
 import { modelHasExplicitOutpaintSize, prepareOutpaint } from './outpaint'
 import {
   renderEditorDocument,
@@ -76,6 +77,8 @@ const exportStage = ref('')
 const exportResult = ref<EditorAsset | null>(null)
 const pickingColor = ref(false)
 const models = ref<ImageModel[]>([])
+const modelsLoading = ref(true)
+const modelsError = ref('')
 const aiModelId = ref<string | null>(null)
 const aiPrompt = ref('')
 const aiRunning = ref(false)
@@ -122,7 +125,9 @@ const editorTools = computed<Array<{ id: EditorTool; icon: string; label: string
     { id: 'canvas', icon: '▣', label: '画布' },
     { id: 'background', icon: '◐', label: '背景' },
   ]
-  if (outpaintModels.value.length) items.push({ id: 'ai', icon: '✦', label: 'AI 扩图' })
+  if (modelsLoading.value || modelsError.value || outpaintModels.value.length) {
+    items.push({ id: 'ai', icon: '✦', label: 'AI 扩图' })
+  }
   return items
 })
 const statusLabel = computed(() => ({
@@ -166,6 +171,7 @@ watch(cropAspectLocked, (locked) => {
 async function loadEditor() {
   loading.value = true
   loadError.value = ''
+  void loadModels()
   try {
     const assetId = String(route.params.assetId ?? '')
     const documentId = typeof route.query.documentId === 'string' ? route.query.documentId : null
@@ -176,6 +182,7 @@ async function loadEditor() {
           method: 'POST',
           body: JSON.stringify({ sourceAssetId: assetId, mode }),
         })
+    preloadEditorImage(loaded.imageAsset.contentUrl)
     documentView.value = loaded
     assetCache.set(loaded.sourceAsset.id, loaded.sourceAsset)
     assetCache.set(loaded.imageAsset.id, loaded.imageAsset)
@@ -190,19 +197,32 @@ async function loadEditor() {
     savedFingerprint.value = fingerprint(editorDocument.value)
     saveState.value = 'saved'
     tool.value = mode === 'crop' ? 'crop' : mode === 'expand' ? 'ai' : 'select'
+    syncDrafts()
+    loading.value = false
     if (!documentId) {
-      await router.replace({
+      void router.replace({
         path: `/editor/${loaded.sourceAssetId}`,
         query: { documentId: loaded.id, ...(mode !== 'canvas' ? { mode } : {}) },
-      })
+      }).catch(() => undefined)
     }
-    models.value = await api<ImageModel[]>('/api/v1/models?includeDiscovered=true&imageOnly=true')
-    aiModelId.value = outpaintModels.value[0]?.id ?? null
-    syncDrafts()
   } catch (error) {
     loadError.value = error instanceof Error ? error.message : '图片编辑器加载失败'
-  } finally {
     loading.value = false
+  }
+}
+
+async function loadModels() {
+  modelsLoading.value = true
+  modelsError.value = ''
+  try {
+    models.value = await api<ImageModel[]>('/api/v1/models?includeDiscovered=true&imageOnly=true')
+    aiModelId.value = outpaintModels.value[0]?.id ?? null
+  } catch (error) {
+    models.value = []
+    aiModelId.value = null
+    modelsError.value = error instanceof Error ? error.message : 'AI 扩图模型加载失败'
+  } finally {
+    modelsLoading.value = false
   }
 }
 
@@ -912,7 +932,12 @@ function fingerprint(document: ImageEditorDocumentV1) {
 
           <section v-else-if="tool === 'ai'">
             <header><div><h2>AI 扩图</h2><p>只展示明确声明支持扩图的模型</p></div></header>
-            <div v-if="outpaintModels.length" class="ai-controls">
+            <div v-if="modelsLoading" class="capability-empty" role="status" aria-live="polite">正在加载 AI 扩图模型…</div>
+            <div v-else-if="modelsError" class="capability-empty" role="alert">
+              <p>AI 扩图模型加载失败，不影响当前图片编辑。</p>
+              <n-button size="small" @click="loadModels">重新加载模型</n-button>
+            </div>
+            <div v-else-if="outpaintModels.length" class="ai-controls">
               <label>扩图模型<n-select v-model:value="aiModelId" :options="aiModelOptions" /></label>
               <label>补充说明（可留空）<n-input v-model:value="aiPrompt" type="textarea" :rows="4" placeholder="例如：向两侧自然延展海滩和天空，保持人物不变" /></label>
               <n-button type="primary" :loading="aiRunning" block @click="runAiExpand">{{ aiRunning ? aiStage : '开始 AI 扩图' }}</n-button>

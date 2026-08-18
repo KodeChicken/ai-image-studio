@@ -4,6 +4,7 @@ import { RouterLink } from 'vue-router'
 import { NButton, NInputNumber, NSelect, useMessage } from 'naive-ui'
 import { api } from '@/api/client'
 import ImagePreviewModal, { type PreviewImage } from '@/components/ImagePreviewModal.vue'
+import { preloadImageEditor } from '@/router/imageEditorRoute'
 import type { Conversation, ImageModel, Provider } from '@/types/api'
 
 interface HistoryItem {
@@ -151,6 +152,8 @@ function imageDownloadName(item: HistoryItem) {
               <RouterLink
                 class="image-edit-button"
                 :to="{ path: `/editor/${item.assetId}`, query: item.editDocumentId ? { documentId: item.editDocumentId } : {} }"
+                @pointerenter="preloadImageEditor"
+                @focus="preloadImageEditor"
               >{{ item.editDocumentId ? '继续编辑' : '编辑成品' }}</RouterLink>
               <a class="image-download-button" :href="item.contentUrl" :download="imageDownloadName(item)">↓ 下载原图</a>
             </span>

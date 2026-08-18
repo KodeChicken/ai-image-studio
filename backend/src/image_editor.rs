@@ -181,11 +181,13 @@ async fn create(
         serde_json::to_value(&document).map_err(|error| AppError::Internal(error.into()))?;
     let id = Uuid::new_v4();
     let title = "图片成品";
-    sqlx::query(
+    let row = sqlx::query_as::<_, DocumentRow>(
         r#"
         INSERT INTO image_edit_documents (
             id, owner_id, source_asset_id, title, schema_version, document_json
         ) VALUES ($1, $2, $3, $4, 1, $5)
+        RETURNING id, source_asset_id, title, schema_version, document_json,
+                  version, created_at, updated_at
         "#,
     )
     .bind(id)
@@ -193,11 +195,11 @@ async fn create(
     .bind(input.source_asset_id)
     .bind(title)
     .bind(document_json)
-    .execute(&state.db)
+    .fetch_one(&state.db)
     .await?;
     Ok((
         StatusCode::CREATED,
-        Json(load_view(&state, current.id, id).await?),
+        Json(build_document_view(row, document, &asset, &asset)?),
     ))
 }
 
@@ -540,9 +542,22 @@ async fn load_view(state: &AppState, owner_id: Uuid, document_id: Uuid) -> AppRe
     .fetch_optional(&state.db)
     .await?
     .ok_or(AppError::NotFound)?;
-    let document = parse_document(row.document_json)?;
+    let document = parse_document(row.document_json.clone())?;
     let source_asset = load_asset(state, owner_id, row.source_asset_id).await?;
-    let image_asset = load_asset(state, owner_id, document.image.asset_id).await?;
+    let image_asset = if row.source_asset_id == document.image.asset_id {
+        source_asset.clone()
+    } else {
+        load_asset(state, owner_id, document.image.asset_id).await?
+    };
+    build_document_view(row, document, &source_asset, &image_asset)
+}
+
+fn build_document_view(
+    row: DocumentRow,
+    document: EditorDocumentV1,
+    source_asset: &AssetRow,
+    image_asset: &AssetRow,
+) -> AppResult<DocumentView> {
     validate_document_geometry(
         &document,
         image_asset.width.unwrap_or(0),
@@ -877,5 +892,35 @@ mod tests {
 
         let oversized = default_document(Uuid::new_v4(), 4096, 4096, "crop");
         assert!(validate_export_dimensions(&oversized, 2, 8192, 8192).is_err());
+    }
+
+    #[test]
+    fn document_view_uses_the_supplied_asset_summaries() {
+        let asset_id = Uuid::new_v4();
+        let document = default_document(asset_id, 1024, 768, "canvas");
+        let now = chrono::Utc::now();
+        let row = DocumentRow {
+            id: Uuid::new_v4(),
+            source_asset_id: asset_id,
+            title: "图片成品".to_owned(),
+            schema_version: 1,
+            document_json: serde_json::to_value(&document).unwrap(),
+            version: 1,
+            created_at: now,
+            updated_at: now,
+        };
+        let asset = AssetRow {
+            id: asset_id,
+            mime_type: "image/png".to_owned(),
+            width: Some(1024),
+            height: Some(768),
+            file_size_bytes: 1,
+        };
+
+        let view = build_document_view(row, document, &asset, &asset).unwrap();
+
+        assert_eq!(view.source_asset.id, asset_id);
+        assert_eq!(view.image_asset.id, asset_id);
+        assert_eq!(view.document.image.asset_id, asset_id);
     }
 }
