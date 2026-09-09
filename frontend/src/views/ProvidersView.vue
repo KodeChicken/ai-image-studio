@@ -49,6 +49,10 @@ const pricingOpen = ref(false)
 const pricingProvider = ref<Provider | null>(null)
 const pricingModel = ref<ImageModel | null>(null)
 const prices = ref<ModelPrice[]>([])
+const copyOpen = ref(false)
+const copyTarget = ref<ImageModel | null>(null)
+const copySourceId = ref<string | null>(null)
+const copying = ref(false)
 const priceValue = ref('')
 const priceCurrency = ref('USD')
 const pricingSaving = ref(false)
@@ -69,6 +73,11 @@ const testModelOptions = computed(() => (testProvider.value ? (groupedModels.val
 const testSizeOptions = computed(() => enumOptions('size'))
 const testQualityOptions = computed(() => enumOptions('quality'))
 const testAspectRatioOptions = computed(() => enumOptions('aspect_ratio'))
+const copySourceOptions = computed(() => models.value
+  .filter((model) => model.providerId === copyTarget.value?.providerId
+    && model.id !== copyTarget.value?.id
+    && model.availabilityStatus === 'verified')
+  .map((model) => ({ label: model.displayName, value: model.id })))
 
 onMounted(load)
 
@@ -242,6 +251,38 @@ async function removePrice(item: ModelPrice) {
   prices.value = prices.value.filter((price) => price.id !== item.id)
   message.success('价格记录已删除')
 }
+
+function openCopyConfiguration(model: ImageModel) {
+  copyTarget.value = model
+  copySourceId.value = null
+  copyOpen.value = true
+}
+
+async function copyModelConfiguration() {
+  const target = copyTarget.value
+  const source = models.value.find((model) => model.id === copySourceId.value)
+  if (!target || !source) return
+  copying.value = true
+  try {
+    await api(`/api/v1/providers/${target.providerId}/models/${target.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        capabilities: source.capabilities,
+        parameterSchema: {
+          ...source.parameterSchema,
+          meta: { ...source.parameterSchema.meta, source: 'manual_inheritance', inheritedFrom: source.upstreamModelId },
+        },
+      }),
+    })
+    copyOpen.value = false
+    await load()
+    message.success(`已从 ${source.displayName} 复制参数配置`)
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '复制参数配置失败')
+  } finally {
+    copying.value = false
+  }
+}
 </script>
 
 <template>
@@ -265,6 +306,7 @@ async function removePrice(item: ModelPrice) {
         <div class="model-tags">
           <span v-for="model in groupedModels.get(item.id)" :key="model.id" :class="model.availabilityStatus">
             {{ model.displayName }} · 可生图
+            <n-button text size="tiny" @click="openCopyConfiguration(model)">继承参数</n-button>
             <n-button text size="tiny" @click="openPricing(item, model)">价格</n-button>
           </span>
           <small v-if="!groupedModels.get(item.id)?.length">尚未发现可用生图模型，请先刷新模型列表</small>
@@ -313,6 +355,13 @@ async function removePrice(item: ModelPrice) {
           </figcaption>
         </figure>
       </div>
+    </div>
+  </n-modal>
+  <n-modal v-model:show="copyOpen" preset="card" :title="`${copyTarget?.displayName || ''} · 继承参数`" class="dialog-card">
+    <div class="form-stack">
+      <p class="modal-intro">复制同一 Provider 下已验证模型的能力和参数配置。保存后刷新模型列表不会覆盖该手工配置。</p>
+      <label>配置来源<n-select v-model:value="copySourceId" :options="copySourceOptions" placeholder="选择兼容模型" /></label>
+      <n-button type="primary" :loading="copying" :disabled="!copySourceId" @click="copyModelConfiguration">复制参数配置</n-button>
     </div>
   </n-modal>
   <n-modal v-model:show="pricingOpen" preset="card" :title="`${pricingModel?.displayName || ''} · 价格`" class="dialog-card">

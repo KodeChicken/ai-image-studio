@@ -445,7 +445,7 @@ async fn run_model_test(
     provider_id: Uuid,
     model_id: Uuid,
     prompt: String,
-    parameters: Value,
+    mut parameters: Value,
     require_known_image_capability: bool,
     log_route: &str,
 ) -> AppResult<ModelTestResult> {
@@ -485,6 +485,9 @@ async fn run_model_test(
         )?;
     }
     let provider = providers::credential_row(state, current.id, provider_id).await?;
+    if provider.provider_type == "openai-compatible" {
+        provider_adapters::apply_request_profile(&mut parameters, &target.parameter_schema);
+    }
     let (ciphertext, nonce) = provider
         .credential_ciphertext
         .zip(provider.credential_nonce)
@@ -928,7 +931,7 @@ fn catalog_for(provider_type: &str, model_id: &str) -> CatalogEntry {
         };
     }
     if id.starts_with("gpt-image-") {
-        let is_gpt_image_2 = id == "gpt-image-2" || id.starts_with("gpt-image-2-");
+        let is_gpt_image_2 = provider_adapters::uses_gpt_image_v2_profile(&id, None);
         let sizes = if is_gpt_image_2 {
             json!([
                 "auto",
@@ -1113,6 +1116,7 @@ fn gpt_image_parameters(is_gpt_image_2: bool) -> Value {
         "meta": {
             "source": "official_catalog",
             "modelFamily": "gpt-image",
+            "requestProfile": if is_gpt_image_2 { "openai-gpt-image-v2" } else { "openai-gpt-image-v1" },
             "schemaVersion": "2026-07-21",
             "reference": "https://developers.openai.com/api/reference/resources/images/methods/generate"
         },
@@ -1206,6 +1210,16 @@ mod tests {
             image_2.parameters["parameters"]
                 .get("input_fidelity")
                 .is_none()
+        );
+
+        let image_25 = catalog_for("openai-compatible", "gpt-image-2.5-flare");
+        assert_eq!(
+            image_25.parameters["meta"]["requestProfile"],
+            "openai-gpt-image-v2"
+        );
+        assert_eq!(
+            image_25.parameters["parameters"]["size"]["allow_custom"],
+            true
         );
 
         let image_15 = catalog_for("openai-compatible", "gpt-image-1.5");

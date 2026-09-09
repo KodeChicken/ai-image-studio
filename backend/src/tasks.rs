@@ -362,6 +362,7 @@ pub async fn create_task(
     let task_id = Uuid::new_v4();
     let trace_id = Uuid::new_v4().simple().to_string();
     let mut request_snapshot = request.parameters;
+    provider_adapters::apply_request_profile(&mut request_snapshot, &selection.parameter_schema);
     if let Value::Object(values) = &mut request_snapshot {
         values.insert(
             "context_asset_ids".to_owned(),
@@ -515,6 +516,7 @@ pub async fn create_editor_task(
     let task_id = Uuid::new_v4();
     let trace_id = Uuid::new_v4().simple().to_string();
     let mut request_snapshot = request.parameters;
+    provider_adapters::apply_request_profile(&mut request_snapshot, &selection.parameter_schema);
     if let Value::Object(values) = &mut request_snapshot {
         values.insert(
             "context_asset_ids".to_owned(),
@@ -1659,7 +1661,10 @@ fn exact_size_target(task: &ProcessingTask) -> Option<(u32, u32)> {
             .and_then(parse_pixel_size);
     }
     if task.provider_type != "openai-compatible"
-        || !task.upstream_model_id.eq_ignore_ascii_case("gpt-image-2")
+        || !provider_adapters::uses_gpt_image_v2_profile(
+            &task.upstream_model_id,
+            provider_adapters::request_profile(&task.request_params),
+        )
     {
         return None;
     }
@@ -2789,6 +2794,14 @@ mod tests {
 
         task.request_params = json!({ "size": "auto" });
         assert_eq!(exact_size_target(&task), None);
+
+        task.upstream_model_id = "gpt-image-3.5-flare".to_owned();
+        task.request_params = json!({ "size": "auto", "aspect_ratio": "16:9" });
+        provider_adapters::apply_request_profile(
+            &mut task.request_params,
+            &json!({ "meta": { "requestProfile": "openai-gpt-image-v2" } }),
+        );
+        assert_eq!(exact_size_target(&task), Some((1536, 864)));
 
         task.edit_document_id = Some(Uuid::new_v4());
         task.provider_type = "custom-openai-compatible".to_owned();

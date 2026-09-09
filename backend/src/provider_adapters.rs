@@ -770,14 +770,14 @@ pub(crate) fn openai_parameters(
     if !grok
         && !values.iter().any(|(key, _)| key == "size")
         && let Some(aspect_ratio) = params.get("aspect_ratio").and_then(Value::as_str)
-        && let Some(size) = size_for_aspect_ratio(model, aspect_ratio)
+        && let Some(size) = size_for_aspect_ratio(model, params, aspect_ratio)
     {
         values.push(("size".to_owned(), json!(size)));
     }
     values
 }
 
-fn size_for_aspect_ratio(model: &str, aspect_ratio: &str) -> Option<&'static str> {
+fn size_for_aspect_ratio(model: &str, params: &Value, aspect_ratio: &str) -> Option<&'static str> {
     let model = model.to_ascii_lowercase();
     if model == "dall-e-3" {
         return match aspect_ratio {
@@ -790,7 +790,7 @@ fn size_for_aspect_ratio(model: &str, aspect_ratio: &str) -> Option<&'static str
     if model == "dall-e-2" {
         return (aspect_ratio == "1:1").then_some("1024x1024");
     }
-    if model == "gpt-image-2" || model.starts_with("gpt-image-2-") {
+    if uses_gpt_image_v2_profile(&model, request_profile(params)) {
         return match aspect_ratio {
             "1:1" => Some("1024x1024"),
             "3:2" => Some("1536x1024"),
@@ -814,7 +814,7 @@ pub(crate) fn effective_openai_dimensions(params: &Value, model: &str) -> Option
         Some(value) if !value.eq_ignore_ascii_case("auto") => value,
         _ => {
             let aspect_ratio = params.get("aspect_ratio")?.as_str()?.trim();
-            size_for_aspect_ratio(model, aspect_ratio)?
+            size_for_aspect_ratio(model, params, aspect_ratio)?
         }
     };
     let (width, height) = value.split_once('x')?;
@@ -829,9 +829,7 @@ fn openai_prompt_with_canvas_requirement(
     model: &str,
     grok: bool,
 ) -> String {
-    let normalized_model = model.to_ascii_lowercase();
-    if grok || !(normalized_model == "gpt-image-2" || normalized_model.starts_with("gpt-image-2-"))
-    {
+    if grok || !uses_gpt_image_v2_profile(model, request_profile(params)) {
         return prompt.to_owned();
     }
     let Some((width, height)) = effective_openai_dimensions(params, model) else {
@@ -848,6 +846,37 @@ fn openai_prompt_with_canvas_requirement(
         "{}\n\n[Output canvas requirement: Compose the image on a {orientation} {ratio} canvas with a target size of {width}x{height} pixels. Do not use a {excluded_orientations} canvas.]",
         prompt.trim_end()
     )
+}
+
+const GPT_IMAGE_V2_PROFILE: &str = "openai-gpt-image-v2";
+const REQUEST_PROFILE_PARAMETER: &str = "_request_profile";
+
+pub(crate) fn uses_gpt_image_v2_profile(model: &str, request_profile: Option<&str>) -> bool {
+    request_profile == Some(GPT_IMAGE_V2_PROFILE)
+        || model
+            .to_ascii_lowercase()
+            .strip_prefix("gpt-image-2")
+            .is_some_and(|suffix| {
+                suffix.is_empty() || suffix.starts_with('.') || suffix.starts_with('-')
+            })
+}
+
+pub(crate) fn apply_request_profile(parameters: &mut Value, schema: &Value) {
+    let Some(profile) = schema
+        .pointer("/meta/requestProfile")
+        .and_then(Value::as_str)
+    else {
+        return;
+    };
+    if let Some(values) = parameters.as_object_mut() {
+        values.insert(REQUEST_PROFILE_PARAMETER.to_owned(), json!(profile));
+    }
+}
+
+pub(crate) fn request_profile(parameters: &Value) -> Option<&str> {
+    parameters
+        .get(REQUEST_PROFILE_PARAMETER)
+        .and_then(Value::as_str)
 }
 
 fn greatest_common_divisor(mut left: u32, mut right: u32) -> u32 {
@@ -1824,6 +1853,25 @@ mod tests {
             false,
         );
         assert!(dalle_3.contains(&("size".to_owned(), json!("1792x1024"))));
+    }
+
+    #[test]
+    fn gpt_image_v2_profile_supports_versions_and_explicit_inheritance() {
+        assert!(uses_gpt_image_v2_profile("gpt-image-2.5-flare", None));
+        assert!(!uses_gpt_image_v2_profile("gpt-image-20", None));
+
+        let schema = json!({ "meta": { "requestProfile": "openai-gpt-image-v2" } });
+        let mut parameters = json!({ "size": "auto", "aspect_ratio": "16:9" });
+        apply_request_profile(&mut parameters, &schema);
+        let inherited = openai_parameters(&parameters, false, "gpt-image-3.5-flare", false);
+
+        assert!(inherited.contains(&("size".to_owned(), json!("1536x864"))));
+        assert!(uses_gpt_image_v2_profile(
+            "gpt-image-3.5-flare",
+            schema
+                .pointer("/meta/requestProfile")
+                .and_then(Value::as_str),
+        ));
     }
 
     #[test]
