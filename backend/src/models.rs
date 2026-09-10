@@ -938,6 +938,8 @@ fn catalog_for(provider_type: &str, model_id: &str) -> CatalogEntry {
                 "1024x1024",
                 "1536x1024",
                 "1024x1536",
+                "1536x864",
+                "864x1536",
                 "2048x2048",
                 "2048x1152",
                 "1152x2048",
@@ -1076,6 +1078,8 @@ fn gpt_image_parameters(is_gpt_image_2: bool) -> Value {
             "1024x1024",
             "1536x1024",
             "1024x1536",
+            "1536x864",
+            "864x1536",
             "2048x2048",
             "2048x1152",
             "1152x2048",
@@ -1117,8 +1121,8 @@ fn gpt_image_parameters(is_gpt_image_2: bool) -> Value {
             "source": "official_catalog",
             "modelFamily": "gpt-image",
             "requestProfile": if is_gpt_image_2 { "openai-gpt-image-v2" } else { "openai-gpt-image-v1" },
-            "schemaVersion": "2026-07-21",
-            "reference": "https://developers.openai.com/api/reference/resources/images/methods/generate"
+            "schemaVersion": "2026-09-08",
+            "reference": "https://developers.openai.com/api/docs/guides/image-generation"
         },
         "parameters": {
             "aspect_ratio": { "type": "enum", "default": "auto", "options": aspect_ratios },
@@ -1206,6 +1210,22 @@ mod tests {
             image_2.parameters["parameters"]["size"]["allow_custom"],
             true
         );
+        assert_eq!(
+            image_2.parameters["parameters"]["size"]["options"],
+            json!([
+                "auto",
+                "1024x1024",
+                "1536x1024",
+                "1024x1536",
+                "1536x864",
+                "864x1536",
+                "2048x2048",
+                "2048x1152",
+                "1152x2048",
+                "3840x2160",
+                "2160x3840"
+            ])
+        );
         assert!(
             image_2.parameters["parameters"]
                 .get("input_fidelity")
@@ -1221,11 +1241,32 @@ mod tests {
             image_25.parameters["parameters"]["size"]["allow_custom"],
             true
         );
+        assert_eq!(
+            image_25.parameters["parameters"]["aspect_ratio"]["options"],
+            json!(["auto", "1:1", "3:2", "2:3", "16:9", "9:16"])
+        );
+        assert_eq!(
+            image_25.parameters["parameters"]["size"]["options"],
+            image_2.parameters["parameters"]["size"]["options"]
+        );
+        assert_eq!(
+            catalog_for("openai-compatible", "gpt-image-2.5-sunburst").parameters["parameters"]["size"]
+                ["options"],
+            image_2.parameters["parameters"]["size"]["options"]
+        );
 
         let image_15 = catalog_for("openai-compatible", "gpt-image-1.5");
         assert_eq!(
+            image_15.parameters["parameters"]["size"]["options"],
+            json!(["auto", "1024x1024", "1536x1024", "1024x1536"])
+        );
+        assert_eq!(
             image_15.parameters["parameters"]["input_fidelity"]["operations"],
             json!(["edit"])
+        );
+        assert_eq!(
+            catalog_for("openai-compatible", "gpt-image-1").parameters["parameters"]["size"]["options"],
+            image_15.parameters["parameters"]["size"]["options"]
         );
 
         let dalle_2 = catalog_for("openai-compatible", "dall-e-2");
