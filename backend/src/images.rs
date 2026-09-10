@@ -108,7 +108,7 @@ async fn content(
     request_headers: HeaderMap,
 ) -> AppResult<Response> {
     current.require_password_changed()?;
-    let asset = load_owned_asset(&state, current.id, asset_id).await?;
+    let asset = load_viewable_asset(&state, current.id, asset_id).await?;
     let etag = HeaderValue::from_str(&format!("\"{}\"", asset.sha256))
         .map_err(|error| AppError::Internal(error.into()))?;
     if request_headers.get(header::IF_NONE_MATCH) == Some(&etag) {
@@ -198,6 +198,30 @@ pub(crate) async fn load_owned_asset(
     .ok_or(AppError::NotFound)
 }
 
+async fn load_viewable_asset(
+    state: &AppState,
+    owner_id: Uuid,
+    asset_id: Uuid,
+) -> AppResult<StoredAssetRow> {
+    sqlx::query_as::<_, StoredAssetRow>(
+        r#"
+        SELECT storage_driver, storage_container, storage_key, mime_type, file_size_bytes, sha256
+        FROM image_assets
+        WHERE id = $1 AND (
+            owner_id = $2 OR EXISTS (
+                SELECT 1 FROM material_templates
+                WHERE image_asset_id = $1 AND published
+            )
+        )
+        "#,
+    )
+    .bind(asset_id)
+    .bind(owner_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(AppError::NotFound)
+}
+
 pub(crate) async fn delete_unreferenced_assets(
     tx: &mut Transaction<'_, Postgres>,
     owner_id: Uuid,
@@ -214,6 +238,7 @@ pub(crate) async fn delete_unreferenced_assets(
           AND NOT EXISTS (SELECT 1 FROM task_input_images ti WHERE ti.asset_id = a.id)
           AND NOT EXISTS (SELECT 1 FROM image_results ir WHERE ir.asset_id = a.id)
           AND NOT EXISTS (SELECT 1 FROM image_edit_documents d WHERE d.source_asset_id = a.id)
+          AND NOT EXISTS (SELECT 1 FROM material_templates mt WHERE mt.image_asset_id = a.id)
           AND NOT EXISTS (SELECT 1 FROM image_assets child WHERE child.parent_asset_id = a.id)
         RETURNING a.id, a.storage_driver, a.storage_container, a.storage_key
         "#,

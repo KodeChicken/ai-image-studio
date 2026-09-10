@@ -9,6 +9,7 @@ pub mod error;
 pub mod history;
 pub mod image_editor;
 pub mod images;
+pub mod materials;
 pub mod models;
 pub mod prompt_templates;
 mod provider_adapters;

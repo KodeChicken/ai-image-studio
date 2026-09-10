@@ -85,6 +85,26 @@ export interface ImageAsset {
   fileSizeBytes: number
 }
 
+export interface MaterialCategory {
+  id: string
+  name: string
+  sortOrder: number
+  itemCount: number
+}
+
+export interface MaterialTemplate {
+  id: string
+  categoryId: string
+  categoryName: string
+  title: string
+  imageUrl: string
+  sourceUrl: string | null
+  sourceAuthor: string | null
+  license: string | null
+  published: boolean
+  sortOrder: number
+}
+
 export interface MessageImageAsset extends ImageAsset {
   relationType: 'attachment' | 'reference' | 'generated'
 }

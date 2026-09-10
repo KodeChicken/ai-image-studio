@@ -29,6 +29,7 @@ const savingPassword = ref(false)
 
 const navigation = computed(() => [
   { to: '/studio', icon: '✦', label: '创作台' },
+  { to: '/materials', icon: '▧', label: '素材库' },
   { to: '/history', icon: '▦', label: '历史作品' },
   { to: '/usage', icon: '◫', label: '用量' },
   { to: '/providers', icon: '◇', label: 'Provider' },

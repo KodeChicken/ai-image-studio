@@ -17,6 +17,7 @@ const router = createRouter({
       children: [
         { path: '', redirect: '/studio' },
         { path: 'studio', name: 'studio', component: () => import('@/views/StudioView.vue') },
+        { path: 'materials', name: 'materials', component: () => import('@/views/MaterialLibraryView.vue') },
         { path: 'history', name: 'history', component: () => import('@/views/HistoryView.vue') },
         { path: 'usage', name: 'usage', component: () => import('@/views/UsageView.vue') },
         { path: 'providers', name: 'providers', component: () => import('@/views/ProvidersView.vue') },

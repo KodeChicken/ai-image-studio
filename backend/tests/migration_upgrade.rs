@@ -179,6 +179,19 @@ async fn run_upgrade_case(
         message_status_constraint.contains("cancelled"),
         "cancelled conversation message status is missing after upgrade"
     );
+    let material_counts = sqlx::query_as::<_, (i64, i64)>(
+        r#"
+        SELECT
+            (SELECT COUNT(*)::BIGINT FROM material_categories),
+            (SELECT COUNT(*)::BIGINT FROM material_templates WHERE published)
+        "#,
+    )
+    .fetch_one(&pool)
+    .await?;
+    anyhow::ensure!(
+        material_counts == (7, 42),
+        "material library seed is incomplete"
+    );
     pool.close().await;
     Ok(())
 }
